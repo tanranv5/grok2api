@@ -431,9 +431,31 @@ async def update_settings(request: UpdateSettingsRequest, _: bool = Depends(veri
     """更新配置"""
     try:
         logger.debug("[Admin] 更新配置")
+        
+        # 保存配置到存储
         await setting.save(global_config=request.global_config, grok_config=request.grok_config)
+        
+        # 重新加载配置到内存
+        await setting.reload()
+        logger.debug("[Admin] 配置已重新加载到内存")
+        
+        # 重新配置代理池（使 proxy_url 等配置立即生效）
+        if request.grok_config:
+            from app.core.proxy_pool import proxy_pool
+            proxy_url = request.grok_config.get("proxy_url", "")
+            proxy_pool_url = request.grok_config.get("proxy_pool_url", "")
+            proxy_pool_interval = request.grok_config.get("proxy_pool_interval", 300)
+            proxy_pool.configure(proxy_url, proxy_pool_url, proxy_pool_interval)
+            
+            if proxy_pool_url:
+                logger.info(f"[Admin] 代理池已重新配置: {proxy_pool_url}")
+            elif proxy_url:
+                logger.info(f"[Admin] 静态代理已重新配置: {proxy_url}")
+            else:
+                logger.info("[Admin] 代理配置已清除")
+        
         logger.debug("[Admin] 配置更新成功")
-        return {"success": True, "message": "配置更新成功"}
+        return {"success": True, "message": "配置更新成功，代理配置已生效"}
     except Exception as e:
         logger.error(f"[Admin] 更新配置失败: {e}")
         raise HTTPException(status_code=500, detail={"error": f"更新失败: {e}", "code": "UPDATE_SETTINGS_ERROR"})
@@ -1014,4 +1036,3 @@ async def clear_logs(_: bool = Depends(verify_admin_session)) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"[Admin] 清空日志失败: {e}")
         raise HTTPException(status_code=500, detail={"error": f"清空失败: {e}"})
-
