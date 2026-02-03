@@ -2,7 +2,9 @@
 Grok 模型管理服务
 """
 
+import json
 from enum import Enum
+from pathlib import Path
 from typing import Optional, Tuple
 from pydantic import BaseModel, Field
 
@@ -36,90 +38,45 @@ class ModelInfo(BaseModel):
 
 class ModelService:
     """模型管理服务"""
-    
-    # 模型别名映射
-    ALIASES = {
-        "grok-imagine": "grok-imagine-1.0",
-    }
-    
-    MODELS = [
-        ModelInfo(
-            model_id="grok-3",
-            grok_model="grok-3",
-            model_mode="MODEL_MODE_AUTO",
-            cost=Cost.LOW,
-            display_name="Grok 3"
-        ),
-        ModelInfo(
-            model_id="grok-3-fast",
-            grok_model="grok-3",
-            cost=Cost.LOW,
-            model_mode="MODEL_MODE_FAST",
-            display_name="Grok 3 Fast"
-        ),
-        ModelInfo(
-            model_id="grok-4",
-            grok_model="grok-4",
-            model_mode="MODEL_MODE_AUTO",
-            cost=Cost.LOW,
-            display_name="Grok 4"
-        ),
-        ModelInfo(
-            model_id="grok-4-mini",
-            grok_model="grok-4-mini-thinking-tahoe",
-            model_mode="MODEL_MODE_GROK_4_MINI_THINKING",
-            cost=Cost.LOW,
-            display_name="Grok 4 Mini"
-        ),
-        ModelInfo(
-            model_id="grok-4-fast",
-            grok_model="grok-4",
-            model_mode="MODEL_MODE_FAST",
-            cost=Cost.LOW,
-            display_name="Grok 4 Fast"
-        ),
-        ModelInfo(
-            model_id="grok-4-heavy",
-            grok_model="grok-4",
-            model_mode="MODEL_MODE_HEAVY",
-            cost=Cost.HIGH,
-            tier=Tier.SUPER,
-            display_name="Grok 4 Heavy"
-        ),
-        ModelInfo(
-            model_id="grok-4.1",
-            grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_AUTO",
-            cost=Cost.LOW,
-            display_name="Grok 4.1"
-        ),
-        ModelInfo(
-            model_id="grok-4.1-thinking",
-            grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_GROK_4_1_THINKING",
-            cost=Cost.HIGH, 
-            display_name="Grok 4.1 Thinking"
-        ),
-        ModelInfo(
-            model_id="grok-imagine-1.0",
-            grok_model="grok-3",
-            model_mode="MODEL_MODE_FAST",
-            cost=Cost.HIGH,
-            display_name="Grok Image",
-            description="Image generation model",
-            is_image=True
-        ),
-        ModelInfo(
-            model_id="grok-imagine-1.0-video",
-            grok_model="grok-3",
-            model_mode="MODEL_MODE_FAST",
-            cost=Cost.HIGH,
-            display_name="Grok Video",
-            description="Video generation model",
-            is_video=True
-        ),
-    ]
-    
+
+    MODEL_DATA_PATH = Path(__file__).resolve().parents[3] / "shared" / "models.json"
+
+    @staticmethod
+    def _safe_enum(enum_cls, value, default):
+        try:
+            return enum_cls(value)
+        except Exception:
+            return default
+
+    @classmethod
+    def _load_model_data(cls):
+        try:
+            raw = json.loads(cls.MODEL_DATA_PATH.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model data: {e}") from e
+
+        aliases = raw.get("aliases") or {}
+        models = []
+        for item in raw.get("models", []):
+            tier = cls._safe_enum(Tier, item.get("tier"), Tier.BASIC)
+            cost = cls._safe_enum(Cost, item.get("cost"), Cost.LOW)
+            models.append(
+                ModelInfo(
+                    model_id=item["id"],
+                    grok_model=item["grok_model"],
+                    model_mode=item.get("model_mode") or "MODEL_MODE_FAST",
+                    tier=tier,
+                    cost=cost,
+                    display_name=item.get("display_name") or "",
+                    description=item.get("description") or "",
+                    is_video=bool(item.get("is_video", False)),
+                    is_image=bool(item.get("is_image", False)),
+                )
+            )
+        return aliases, models
+
+    ALIASES, MODELS = _load_model_data()
+
     _map = {m.model_id: m for m in MODELS}
     
     @classmethod

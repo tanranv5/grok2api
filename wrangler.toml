@@ -1,0 +1,33 @@
+name = "grok2api"
+main = "src/index.ts"
+compatibility_date = "2026-01-28"
+
+# Static assets (admin UI)
+assets = { directory = "./app/template", binding = "ASSETS" }
+
+[[d1_databases]]
+binding = "DB"
+database_name = "grok2api"
+# Filled by CI / your first deployment bootstrap.
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "KV_CACHE"
+# Filled by CI / your first deployment bootstrap.
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+# Daily reset at local midnight (default: Asia/Shanghai, UTC+8).
+# Make sure the cron below matches this offset.
+CACHE_RESET_TZ_OFFSET_MINUTES = "480"
+
+# Workers KV has per-value limits; keep <= 25MB.
+KV_CACHE_MAX_BYTES = "26214400"
+
+# Batch size for the daily cleanup job (deleting KV keys + D1 rows).
+KV_CLEANUP_BATCH = "200"
+
+[triggers]
+# Every day at 00:00 (Asia/Shanghai => 16:00 UTC)
+crons = ["0 16 * * *"]

@@ -35,6 +35,9 @@ env/
 *~
 .DS_Store
 
+# Node
+node_modules/
+
 # Environment Variables
 .env
 .env.local

@@ -14,7 +14,7 @@ async function login() {
 
     if (res.ok) {
       await storeAppKey(input);
-      window.location.href = '/admin/token';
+      window.location.href = '/admin-legacy/token';
     } else {
       showToast('密钥无效', 'error');
     }
@@ -31,7 +31,7 @@ async function login() {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${existingKey}` }
     }).then(res => {
-      if (res.ok) window.location.href = '/admin/token';
+      if (res.ok) window.location.href = '/admin-legacy/token';
     });
     return;
   }

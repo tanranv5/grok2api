@@ -8,7 +8,7 @@ from typing import List, Dict, Optional
 from pathlib import Path
 
 from app.core.logger import logger
-from app.core.config import setting
+from app.core.config import get_config
 
 
 class ApiKeyManager:
@@ -168,7 +168,7 @@ class ApiKeyManager:
     def validate_key(self, key: str) -> Optional[Dict]:
         """验证 Key，返回 Key 信息"""
         # 1. 检查全局配置的 Key (作为默认 admin key)
-        global_key = setting.grok_config.get("api_key")
+        global_key = get_config("app.api_key", "")
         if global_key and key == global_key:
             return {
                 "key": global_key,

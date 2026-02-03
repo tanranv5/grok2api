@@ -53,6 +53,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Python: {sys.version.split()[0]}")
     
+    # 2.5 初始化 API Key / 统计 / 日志
+    from app.services.api_keys import api_key_manager
+    from app.services.request_stats import request_stats
+    from app.services.request_logger import request_logger
+    await api_key_manager.init()
+    await request_stats.init()
+    await request_logger.init()
+    
     # 3. 启动 Token 刷新调度器
     refresh_enabled = get_config("token.auto_refresh", True)
     if refresh_enabled:

@@ -31,6 +31,10 @@ git clone https://github.com/chenyme/grok2api
 docker compose up -d
 ```
 
+### Cloudflare Workers 部署
+
+如需部署到 Cloudflare Workers/Pages（D1 + KV），请参考 `README.cloudflare.md`。
+
 ### 管理面板
 
 访问地址：`http://<host>:8000/admin`  
