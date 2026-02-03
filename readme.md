@@ -66,8 +66,11 @@ docker compose up -d
 | `grok-4-heavy`           |  4  | Super       |   支持   |   支持   |    -    |
 | `grok-4.1`               |  1  | Basic/Super |   支持   |   支持   |    -    |
 | `grok-4.1-thinking`      |  4  | Basic/Super |   支持   |   支持   |    -    |
+| `grok-imagine`           |  4  | Basic/Super |    -    |   支持   |    -    |
 | `grok-imagine-1.0`       |  4  | Basic/Super |    -    |   支持   |    -    |
 | `grok-imagine-1.0-video` |  -  | Basic/Super |    -    |    -    |   支持   |
+
+注：`grok-imagine` 为 `grok-imagine-1.0` 的别名，用于兼容历史调用。
 
 <br>
 
@@ -84,6 +87,18 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{
     "model": "grok-4",
     "messages": [{"role":"user","content":"你好"}]
+  }'
+```
+
+**图像生成示例**
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -d '{
+    "model": "grok-imagine",
+    "messages": [{"role":"user","content":"Generate a cat"}]
   }'
 ```
 

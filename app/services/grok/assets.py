@@ -29,6 +29,7 @@ from app.core.exceptions import (
     ValidationException
 )
 from app.services.grok.statsig import StatsigService
+from app.services.grok.retry import retry_on_status
 
 
 # ==================== 常量 ====================
@@ -318,31 +319,42 @@ class UploadService(BaseService):
                     "content": b64,
                 }
                 
-                # 执行上传
-                session = await self._get_session()
-                response = await session.post(
-                    UPLOAD_API,
-                    headers=headers,
-                    json=payload,
-                    impersonate=BROWSER,
-                    timeout=self.timeout,
-                    proxies=self._proxies(),
-                )
+                def extract_status(error: Exception) -> Optional[int]:
+                    if isinstance(error, UpstreamException) and error.details:
+                        return error.details.get("status")
+                    return None
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    file_id = result.get("fileMetadataId", "")
-                    file_uri = result.get("fileUri", "")
-                    logger.info(f"Upload success: {filename} -> {file_id}", extra={"file_id": file_id})
-                    return file_id, file_uri
+                async def do_upload() -> Tuple[str, str]:
+                    # 执行上传
+                    session = await self._get_session()
+                    response = await session.post(
+                        UPLOAD_API,
+                        headers=headers,
+                        json=payload,
+                        impersonate=BROWSER,
+                        timeout=self.timeout,
+                        proxies=self._proxies(),
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        file_id = result.get("fileMetadataId", "")
+                        file_uri = result.get("fileUri", "")
+                        logger.info(f"Upload success: {filename} -> {file_id}", extra={"file_id": file_id})
+                        return file_id, file_uri
+                    
+                    logger.error(
+                        f"Upload failed: {filename} - {response.status_code}", 
+                        extra={"response": response.text[:200]}
+                    )
+                    raise UpstreamException(
+                        message=f"Upload failed with status {response.status_code}",
+                        details={"status": response.status_code, "response": response.text[:200]}
+                    )
                 
-                logger.error(
-                    f"Upload failed: {filename} - {response.status_code}", 
-                    extra={"response": response.text[:200]}
-                )
-                raise UpstreamException(
-                    message=f"Upload failed with status {response.status_code}",
-                    details={"status": response.status_code, "response": response.text[:200]}
+                return await retry_on_status(
+                    do_upload,
+                    extract_status=extract_status
                 )
             
             except Exception as e:

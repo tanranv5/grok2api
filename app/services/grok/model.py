@@ -37,6 +37,11 @@ class ModelInfo(BaseModel):
 class ModelService:
     """模型管理服务"""
     
+    # 模型别名映射
+    ALIASES = {
+        "grok-imagine": "grok-imagine-1.0",
+    }
+    
     MODELS = [
         ModelInfo(
             model_id="grok-3",
@@ -120,6 +125,7 @@ class ModelService:
     @classmethod
     def get(cls, model_id: str) -> Optional[ModelInfo]:
         """获取模型信息"""
+        model_id = cls.normalize(model_id)
         return cls._map.get(model_id)
     
     @classmethod
@@ -130,6 +136,7 @@ class ModelService:
     @classmethod
     def valid(cls, model_id: str) -> bool:
         """模型是否有效"""
+        model_id = cls.normalize(model_id)
         return model_id in cls._map
 
     @classmethod
@@ -147,6 +154,11 @@ class ModelService:
         if model and model.tier == Tier.SUPER:
             return "ssoSuper"
         return "ssoBasic"
+    
+    @classmethod
+    def normalize(cls, model_id: str) -> str:
+        """归一化模型名（处理别名）"""
+        return cls.ALIASES.get(model_id, model_id)
 
 
 __all__ = ["ModelService"]

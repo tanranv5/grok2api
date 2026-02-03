@@ -16,6 +16,7 @@ from app.services.grok.statsig import StatsigService
 from app.services.grok.model import ModelService
 from app.services.token import get_token_manager
 from app.services.grok.processor import VideoStreamProcessor, VideoCollectProcessor
+from app.services.grok.retry import retry_on_status
 
 # API 端点
 CREATE_POST_API = "https://grok.com/rest/media/post/create"
@@ -88,6 +89,13 @@ class VideoService:
     def _build_proxies(self) -> Optional[dict]:
         """构建代理"""
         return {"http": self.proxy, "https": self.proxy} if self.proxy else None
+
+    @staticmethod
+    def _extract_status(error: Exception) -> Optional[int]:
+        """从异常中提取状态码"""
+        if isinstance(error, UpstreamException) and error.details:
+            return error.details.get("status")
+        return None
     
     async def create_post(self, token: str, prompt: str, media_type: str = "MEDIA_POST_TYPE_VIDEO", media_url: str = None) -> str:
         """
@@ -102,7 +110,7 @@ class VideoService:
         Returns:
             post ID
         """
-        try:
+        async def _create_once() -> str:
             headers = self._build_headers(token)
             
             # 根据类型构建不同的载荷
@@ -129,17 +137,28 @@ class VideoService:
             
             if response.status_code != 200:
                 logger.error(f"Create post failed: {response.status_code}")
-                raise UpstreamException(f"Failed to create post: {response.status_code}")
+                raise UpstreamException(
+                    message=f"Failed to create post: {response.status_code}",
+                    details={"status": response.status_code}
+                )
             
             data = response.json()
             post_id = data.get("post", {}).get("id", "")
             
             if not post_id:
-                raise UpstreamException("No post ID in response")
+                raise UpstreamException(
+                    message="No post ID in response",
+                    details={"status": response.status_code}
+                )
             
             logger.info(f"Media post created: {post_id} (type={media_type})")
             return post_id
-            
+        
+        try:
+            return await retry_on_status(
+                _create_once,
+                extract_status=self._extract_status
+            )
         except Exception as e:
             logger.error(f"Create post error: {e}")
             if isinstance(e, AppException):
@@ -239,30 +258,49 @@ class VideoService:
                 # Step 1: 创建帖子
                 post_id = await self.create_post(token, prompt)
                 
-                # Step 2: 建立连接
+                # Step 2: 建立连接（可重试）
                 headers = self._build_headers(token)
                 payload = self._build_payload(prompt, post_id, aspect_ratio, video_length, resolution, preset)
                 
-                session = AsyncSession(impersonate=BROWSER)
-                response = await session.post(
-                    CHAT_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=self.timeout,
-                    stream=True,
-                    proxies=self._build_proxies()
-                )
-                
-                if response.status_code != 200:
-                    logger.error(f"Video generation failed: {response.status_code}")
+                async def establish_connection():
+                    sess = AsyncSession(impersonate=BROWSER)
                     try:
-                        await session.close()
-                    except:
-                        pass
-                    raise UpstreamException(
-                        message=f"Video generation failed: {response.status_code}",
-                        details={"status": response.status_code}
-                    )
+                        resp = await sess.post(
+                            CHAT_API,
+                            headers=headers,
+                            data=orjson.dumps(payload),
+                            timeout=self.timeout,
+                            stream=True,
+                            proxies=self._build_proxies()
+                        )
+                        if resp.status_code != 200:
+                            logger.error(f"Video generation failed: {resp.status_code}")
+                            try:
+                                await sess.close()
+                            except:
+                                pass
+                            raise UpstreamException(
+                                message=f"Video generation failed: {resp.status_code}",
+                                details={"status": resp.status_code}
+                            )
+                        return sess, resp
+                    except UpstreamException:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Video generation connection error: {e}")
+                        try:
+                            await sess.close()
+                        except:
+                            pass
+                        raise UpstreamException(
+                            message=f"Video generation connection failed: {str(e)}",
+                            details={"error": str(e)}
+                        )
+                
+                session, response = await retry_on_status(
+                    establish_connection,
+                    extract_status=self._extract_status
+                )
                 
                 # Step 3: 流式传输
                 async def stream_response():
@@ -319,30 +357,49 @@ class VideoService:
                 # Step 1: 创建帖子
                 post_id = await self.create_image_post(token, image_url)
                 
-                # Step 2: 建立连接
+                # Step 2: 建立连接（可重试）
                 headers = self._build_headers(token)
                 payload = self._build_payload(prompt, post_id, aspect_ratio, video_length, resolution, preset)
                 
-                session = AsyncSession(impersonate=BROWSER)
-                response = await session.post(
-                    CHAT_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=self.timeout,
-                    stream=True,
-                    proxies=self._build_proxies()
-                )
-                
-                if response.status_code != 200:
-                    logger.error(f"Video from image failed: {response.status_code}")
+                async def establish_connection():
+                    sess = AsyncSession(impersonate=BROWSER)
                     try:
-                        await session.close()
-                    except:
-                        pass
-                    raise UpstreamException(
-                        message=f"Video from image failed: {response.status_code}",
-                        details={"status": response.status_code}
-                    )
+                        resp = await sess.post(
+                            CHAT_API,
+                            headers=headers,
+                            data=orjson.dumps(payload),
+                            timeout=self.timeout,
+                            stream=True,
+                            proxies=self._build_proxies()
+                        )
+                        if resp.status_code != 200:
+                            logger.error(f"Video from image failed: {resp.status_code}")
+                            try:
+                                await sess.close()
+                            except:
+                                pass
+                            raise UpstreamException(
+                                message=f"Video from image failed: {resp.status_code}",
+                                details={"status": resp.status_code}
+                            )
+                        return sess, resp
+                    except UpstreamException:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Video from image connection error: {e}")
+                        try:
+                            await sess.close()
+                        except:
+                            pass
+                        raise UpstreamException(
+                            message=f"Video from image connection failed: {str(e)}",
+                            details={"error": str(e)}
+                        )
+                
+                session, response = await retry_on_status(
+                    establish_connection,
+                    extract_status=self._extract_status
+                )
                 
                 # Step 3: 流式传输
                 async def stream_response():

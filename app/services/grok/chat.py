@@ -396,6 +396,12 @@ class GrokChatService:
         except ValueError as e:
             raise ValidationException(str(e))
         
+        # 图片模型默认走图像生成提示词
+        if model_info.is_image:
+            normalized = message.strip()
+            if not normalized.lower().startswith("image generation:"):
+                message = f"Image Generation:{message}"
+        
         # 处理附件上传
         file_ids = []
         image_ids = []
