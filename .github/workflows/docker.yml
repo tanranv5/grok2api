@@ -72,7 +72,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
           pull: true
   
-  # 合并多架构镜像为统一标签
   merge-manifests:
     runs-on: ubuntu-latest
     needs: build-and-push
