@@ -7,6 +7,22 @@ import { runKvDailyClear } from "./kv/cleanup";
 
 const app = new Hono<{ Bindings: Env }>();
 
+function withNoCache(res: Response): Response {
+  const headers = new Headers(res.headers);
+  headers.set("cache-control", "no-store, no-cache, must-revalidate");
+  headers.set("pragma", "no-cache");
+  headers.set("expires", "0");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+function withNoCacheIfNeeded(res: Response, pathname: string): Response {
+  const lower = pathname.toLowerCase();
+  if (lower.endsWith(".html") || lower.endsWith(".js") || lower.endsWith(".css")) {
+    return withNoCache(res);
+  }
+  return res;
+}
+
 app.route("/v1", openAiRoutes);
 app.route("/", mediaRoutes);
 app.route("/", adminRoutes);
@@ -15,19 +31,22 @@ app.get("/_worker.js", (c) => c.notFound());
 
 app.get("/", (c) => c.redirect("/login", 302));
 
-app.get("/login", (c) =>
-  c.env.ASSETS.fetch(new Request(new URL("/login.html", c.req.url), c.req.raw)),
-);
+app.get("/login", async (c) => {
+  const res = await c.env.ASSETS.fetch(new Request(new URL("/login.html", c.req.url), c.req.raw));
+  return withNoCache(res);
+});
 
-app.get("/manage", (c) =>
-  c.env.ASSETS.fetch(new Request(new URL("/admin.html", c.req.url), c.req.raw)),
-);
+app.get("/manage", async (c) => {
+  const res = await c.env.ASSETS.fetch(new Request(new URL("/admin.html", c.req.url), c.req.raw));
+  return withNoCache(res);
+});
 
-app.get("/static/*", (c) => {
+app.get("/static/*", async (c) => {
   const url = new URL(c.req.url);
   if (url.pathname === "/static/_worker.js") return c.notFound();
   url.pathname = url.pathname.replace(/^\/static\//, "/");
-  return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw));
+  const res = await c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw));
+  return withNoCacheIfNeeded(res, url.pathname);
 });
 
 app.get("/health", (c) =>
