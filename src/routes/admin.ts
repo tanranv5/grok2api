@@ -363,7 +363,11 @@ adminRoutes.post("/api/tokens/refresh-selected", requireAdminAuth, async (c) => 
     const body = (await c.req.json().catch(() => ({}))) as { tokens?: unknown };
     const tokensInput = Array.isArray(body.tokens) ? body.tokens : [];
     const tokens = Array.from(
-      new Set(tokensInput.filter((t): t is string => typeof t === "string" && t.trim()).map((t) => t.trim())),
+      new Set(
+        tokensInput
+          .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+          .map((t) => t.trim()),
+      ),
     );
     if (!tokens.length) {
       return c.json({ success: false, message: "未提供 Token 列表" });
