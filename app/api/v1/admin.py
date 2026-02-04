@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from app.core.auth import verify_api_key, verify_app_key
 from app.core.config import config, get_config
 from app.core.storage import get_storage, LocalStorage, RedisStorage, SQLStorage
@@ -278,22 +278,22 @@ async def admin_cache_page():
 @router.get("/admin-legacy", response_class=HTMLResponse, include_in_schema=False)
 async def admin_legacy_login_page():
     """旧版管理后台登录页"""
-    return await render_template("login/login.html")
+    return RedirectResponse(url="/manage", status_code=302)
 
 @router.get("/admin-legacy/config", response_class=HTMLResponse, include_in_schema=False)
 async def admin_legacy_config_page():
     """旧版配置管理页"""
-    return await render_template("config/config.html")
+    return RedirectResponse(url="/manage", status_code=302)
 
 @router.get("/admin-legacy/token", response_class=HTMLResponse, include_in_schema=False)
 async def admin_legacy_token_page():
     """旧版 Token 管理页"""
-    return await render_template("token/token.html")
+    return RedirectResponse(url="/manage", status_code=302)
 
 @router.get("/admin-legacy/cache", response_class=HTMLResponse, include_in_schema=False)
 async def admin_legacy_cache_page():
     """旧版缓存管理页"""
-    return await render_template("cache/cache.html")
+    return RedirectResponse(url="/manage", status_code=302)
 
 @router.get("/api/v1/admin/cache", dependencies=[Depends(verify_api_key)])
 async def get_cache_stats_api(request: Request):
