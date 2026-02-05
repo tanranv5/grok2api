@@ -963,6 +963,27 @@
               </div>
               <div>
                 <label class="cfg-label">
+                  重试退避基数 (秒)
+                  <span class="help-icon" title="重试间隔的基数（秒）。默认 1。">?</span>
+                </label>
+                <input id="cfgRetryBackoffBase" type="number" class="cfg-input" placeholder="1" min="0" step="0.1">
+              </div>
+              <div>
+                <label class="cfg-label">
+                  重试退避倍率
+                  <span class="help-icon" title="每次重试的倍增系数。默认 2。">?</span>
+                </label>
+                <input id="cfgRetryBackoffFactor" type="number" class="cfg-input" placeholder="2" min="1" step="0.1">
+              </div>
+              <div>
+                <label class="cfg-label">
+                  重试退避上限 (秒)
+                  <span class="help-icon" title="重试间隔的最大上限（秒）。默认 30。">?</span>
+                </label>
+                <input id="cfgRetryBackoffMax" type="number" class="cfg-input" placeholder="30" min="0" step="0.1">
+              </div>
+              <div>
+                <label class="cfg-label">
                   可重试状态码
                   <span class="help-icon"
                     title="遇到这些HTTP状态码时会自动换token重试。多个状态码用逗号分隔。默认：401,429&#10;常见状态码：401(未授权), 429(速率限制), 500(服务器错误), 502(网关错误), 503(服务不可用)">?</span>
@@ -1231,6 +1252,8 @@
   <script>
     let allTokens = [], filteredTokens = [], selectedTokens = new Set(), allTagsList = [];
     let refreshAllCursor = 0, refreshAllTotal = 0, refreshAllBatch = 50, refreshAllActive = false;
+    let refreshSelectedCursor = 0, refreshSelectedTotal = 0, refreshSelectedBatch = 50, refreshSelectedActive = false;
+    let refreshSelectedTokensList = [];
     let allLogsData = [], currentLogPage = 1, logsPerPage = 20;
     const selectedKeys = new Set();
     const $ = (id) => document.getElementById(id);
@@ -1688,12 +1711,19 @@
             setRefreshUi(isRunning, current || 0, total || 0, success || 0, failed || 0);
             if (!isRunning) {
               stopRefreshPolling();
-              if (refreshAllActive && typeof current === 'number' && current < total) {
+              const hasMore = typeof current === 'number' && typeof total === 'number' && current < total;
+              if (refreshAllActive && hasMore) {
                 refreshAllCursor = current;
                 await startRefreshAllBatch();
                 return;
               }
+              if (refreshSelectedActive && hasMore) {
+                refreshSelectedCursor = current;
+                await startRefreshSelectedBatch();
+                return;
+              }
               refreshAllActive = false;
+              refreshSelectedActive = false;
               refreshHideTimer = setTimeout(() => {
                 setRefreshUi(false, current || 0, total || 0, success || 0, failed || 0);
                 $('refreshProgress')?.classList.add('hidden');
@@ -1741,22 +1771,9 @@
       }
     };
 
-    const refreshAllTokens = async () => {
-      if (!confirm('确定要刷新所有Token的剩余次数吗？这可能需要一段时间...')) return;
-
-      refreshAllActive = true;
-      refreshAllCursor = 0;
-      refreshAllTotal = allTokens.length || 0;
-      await startRefreshAllBatch();
-    };
-    const refreshSelectedTokens = async () => {
-      refreshAllActive = false;
-      if (!selectedTokens.size) return showToast('请先选择要刷新的 Token', 'error');
-      if (!confirm(`确定要刷新选中的 ${selectedTokens.size} 个 Token 吗？这可能需要一段时间...`)) return;
-
+    const startRefreshSelectedBatch = async () => {
       try {
-        const tokens = Array.from(selectedTokens);
-        const r = await apiRequest('/api/tokens/refresh-selected', { method: 'POST', body: JSON.stringify({ tokens }) });
+        const r = await apiRequest('/api/tokens/refresh-selected', { method: 'POST', body: JSON.stringify({ tokens: refreshSelectedTokensList, cursor: refreshSelectedCursor, limit: refreshSelectedBatch }) });
         if (!r) return;
         const d = await r.json();
 
@@ -1767,15 +1784,44 @@
         }
 
         if (!d.success) {
+          refreshSelectedActive = false;
           showToast(d.message || '启动刷新失败', 'error');
           return;
         }
 
-        const total = d.data?.total || tokens.length;
-        setRefreshUi(true, 0, total, 0, 0);
+        if (typeof d.data?.total === 'number') refreshSelectedTotal = d.data.total;
+        const total = refreshSelectedTotal || d.data?.total || refreshSelectedTokensList.length || 0;
+        setRefreshUi(true, refreshSelectedCursor, total, 0, 0);
         showToast('刷新任务已启动...', 'info');
         startRefreshPolling();
       } catch (e) {
+        refreshSelectedActive = false;
+        showToast('刷新失败: ' + e.message, 'error');
+      }
+    };
+
+    const refreshAllTokens = async () => {
+      if (!confirm('确定要刷新所有Token的剩余次数吗？这可能需要一段时间...')) return;
+
+      refreshAllActive = true;
+      refreshSelectedActive = false;
+      refreshAllCursor = 0;
+      refreshAllTotal = allTokens.length || 0;
+      await startRefreshAllBatch();
+    };
+    const refreshSelectedTokens = async () => {
+      if (!selectedTokens.size) return showToast('请先选择要刷新的 Token', 'error');
+      if (!confirm(`确定要刷新选中的 ${selectedTokens.size} 个 Token 吗？这可能需要一段时间...`)) return;
+
+      try {
+        refreshAllActive = false;
+        refreshSelectedActive = true;
+        refreshSelectedTokensList = Array.from(selectedTokens);
+        refreshSelectedCursor = 0;
+        refreshSelectedTotal = refreshSelectedTokensList.length || 0;
+        await startRefreshSelectedBatch();
+      } catch (e) {
+        refreshSelectedActive = false;
         showToast('刷新失败: ' + e.message, 'error');
       }
     };
@@ -1853,7 +1899,7 @@
         }
       } catch (e) { console.error('加载统计失败:', e); showToast('加载统计失败', 'error') }
     };
-    const loadSettings = async () => { try { const r = await apiRequest('/api/settings'); if (!r) return; const d = await r.json(); if (d.success) { const g = d.data.global, k = d.data.grok; const cfClearance = k.cf_clearance || ''; const cleanCfDisplay = cfClearance.startsWith('cf_clearance=') ? cfClearance.split('cf_clearance=')[1] : cfClearance; $('cfgAdminUser').value = g.admin_username || ''; $('cfgAdminPass').value = ''; $('cfgLogLevel').value = g.log_level || 'DEBUG'; $('cfgImageCacheMaxSize').value = g.image_cache_max_size_mb || 500; $('cfgVideoCacheMaxSize').value = g.video_cache_max_size_mb || 1000; $('cfgImageMode').value = g.image_mode || 'url'; $('cfgBaseUrl').value = g.base_url || ''; $('cfgApiKey').value = k.api_key || ''; $('cfgProxyUrl').value = k.proxy_url || ''; $('cfgProxyPoolUrl').value = k.proxy_pool_url || ''; $('cfgProxyPoolInterval').value = k.proxy_pool_interval || 300; $('cfgCacheProxyUrl').value = k.cache_proxy_url || ''; $('cfgCfClearance').value = cleanCfDisplay; $('cfgStatsigId').value = k.x_statsig_id || ''; $('cfgDynamicStatsig').checked = k.dynamic_statsig !== false; updateStatsigIdState(); $('cfgFilteredTags').value = k.filtered_tags || ''; $('cfgShowThinking').value = k.show_thinking !== false ? 'true' : 'false'; $('cfgTemporary').value = k.temporary !== false ? 'true' : 'false'; $('cfgVideoPosterPreview').value = k.video_poster_preview === true ? 'true' : 'false'; $('cfgStreamChunkTimeout').value = k.stream_chunk_timeout || 120; $('cfgStreamFirstResponseTimeout').value = k.stream_first_response_timeout || 30; $('cfgStreamTotalTimeout').value = k.stream_total_timeout || 600; $('cfgMaxRetry').value = k.max_retry || 3; $('cfgRetryStatusCodes').value = (k.retry_status_codes || [401, 429]).join(','); $('cfgRetryOnNetwork').value = k.retry_on_network_error !== false ? 'true' : 'false'; updateCacheProxyReadonly(); await loadCacheSize() } } catch (e) { console.error('加载配置失败:', e); showToast('加载配置失败', 'error') } };
+    const loadSettings = async () => { try { const r = await apiRequest('/api/settings'); if (!r) return; const d = await r.json(); if (d.success) { const g = d.data.global, k = d.data.grok; const cfClearance = k.cf_clearance || ''; const cleanCfDisplay = cfClearance.startsWith('cf_clearance=') ? cfClearance.split('cf_clearance=')[1] : cfClearance; $('cfgAdminUser').value = g.admin_username || ''; $('cfgAdminPass').value = ''; $('cfgLogLevel').value = g.log_level || 'DEBUG'; $('cfgImageCacheMaxSize').value = g.image_cache_max_size_mb || 500; $('cfgVideoCacheMaxSize').value = g.video_cache_max_size_mb || 1000; $('cfgImageMode').value = g.image_mode || 'url'; $('cfgBaseUrl').value = g.base_url || ''; $('cfgApiKey').value = k.api_key || ''; $('cfgProxyUrl').value = k.proxy_url || ''; $('cfgProxyPoolUrl').value = k.proxy_pool_url || ''; $('cfgProxyPoolInterval').value = k.proxy_pool_interval || 300; $('cfgCacheProxyUrl').value = k.cache_proxy_url || ''; $('cfgCfClearance').value = cleanCfDisplay; $('cfgStatsigId').value = k.x_statsig_id || ''; $('cfgDynamicStatsig').checked = k.dynamic_statsig !== false; updateStatsigIdState(); $('cfgFilteredTags').value = k.filtered_tags || ''; $('cfgShowThinking').value = k.show_thinking !== false ? 'true' : 'false'; $('cfgTemporary').value = k.temporary !== false ? 'true' : 'false'; $('cfgVideoPosterPreview').value = k.video_poster_preview === true ? 'true' : 'false'; $('cfgStreamChunkTimeout').value = k.stream_chunk_timeout || 120; $('cfgStreamFirstResponseTimeout').value = k.stream_first_response_timeout || 30; $('cfgStreamTotalTimeout').value = k.stream_total_timeout || 600; $('cfgMaxRetry').value = k.max_retry || 3; $('cfgRetryBackoffBase').value = k.retry_backoff_base ?? 1; $('cfgRetryBackoffFactor').value = k.retry_backoff_factor ?? 2; $('cfgRetryBackoffMax').value = k.retry_backoff_max ?? 30; $('cfgRetryStatusCodes').value = (k.retry_status_codes || [401, 429]).join(','); $('cfgRetryOnNetwork').value = k.retry_on_network_error !== false ? 'true' : 'false'; updateCacheProxyReadonly(); await loadCacheSize() } } catch (e) { console.error('加载配置失败:', e); showToast('加载配置失败', 'error') } };
     const loadCacheSize = async () => { try { const r = await apiRequest('/api/cache/size'); if (!r) return; const d = await r.json(); if (d.success) { ['image', 'video', 'total'].forEach(t => $(`${t}CacheSize`).value = d.data[`${t}_size`] || '0 MB') } } catch (e) { console.error('加载缓存大小失败:', e);['image', 'video', 'total'].forEach(t => $(`${t}CacheSize`).value = '0 MB') } };
     const clearCacheByType = async (type, url, msg) => { if (!confirm(msg)) return; try { const r = await apiRequest(url, { method: 'POST' }); if (!r) return; const d = await r.json(); d.success ? (showToast(`${type}缓存清理完成，已删除 ${d.data.deleted_count || 0} 个文件`, 'success'), await loadCacheSize(), await loadCachePreview(true)) : showToast('清理失败: ' + (d.error || '未知错误'), 'error') } catch (e) { showToast('清理失败: ' + e.message, 'error') } };
     const clearImageCache = () => clearCacheByType('图片', '/api/cache/clear/images', '确定要清理图片缓存吗？此操作将删除所有图片缓存文件！');
@@ -1999,7 +2045,7 @@
     const refreshCachePreview = () => loadCachePreview(true);
     const loadMoreCachePreview = () => loadCachePreview(false);
     const saveGlobalSettings = async () => { const gc = { admin_username: $('cfgAdminUser').value, log_level: $('cfgLogLevel').value, image_cache_max_size_mb: parseInt($('cfgImageCacheMaxSize').value) || 500, video_cache_max_size_mb: parseInt($('cfgVideoCacheMaxSize').value) || 1000, image_mode: $('cfgImageMode').value, base_url: $('cfgBaseUrl').value }; if ($('cfgAdminPass').value) gc.admin_password = $('cfgAdminPass').value; try { const r = await apiRequest('/api/settings'); if (!r) return; const d = await r.json(); if (!d.success) return showToast('加载配置失败', 'error'); const s = await apiRequest('/api/settings', { method: 'POST', body: JSON.stringify({ global_config: gc, grok_config: d.data.grok }) }); if (!s) return; const sd = await s.json(); sd.success ? (showToast('全局配置保存成功', 'success'), $('cfgAdminPass').value = '') : showToast('保存失败: ' + (sd.error || '未知错误'), 'error') } catch (e) { showToast('保存失败: ' + e.message, 'error') } };
-    const saveGrokSettings = async () => { const pu = $('cfgProxyUrl').value.trim(), cf = $('cfgCfClearance').value.trim(); const cleanCf = cf.startsWith('cf_clearance=') ? cf.split('cf_clearance=')[1] : cf; const retryCodesStr = $('cfgRetryStatusCodes').value.trim(); const retryCodes = retryCodesStr ? retryCodesStr.split(',').map(c => parseInt(c.trim())).filter(c => !isNaN(c)) : [401, 429]; const maxRetryRaw = parseInt($('cfgMaxRetry').value); const kc = { api_key: $('cfgApiKey').value, proxy_url: pu, proxy_pool_url: $('cfgProxyPoolUrl').value.trim(), proxy_pool_interval: parseInt($('cfgProxyPoolInterval').value) || 300, cache_proxy_url: pu ? $('cfgCacheProxyUrl').value : '', cf_clearance: cleanCf, x_statsig_id: $('cfgStatsigId').value, dynamic_statsig: $('cfgDynamicStatsig').checked, filtered_tags: $('cfgFilteredTags').value, show_thinking: $('cfgShowThinking').value === 'true', temporary: $('cfgTemporary').value === 'true', video_poster_preview: $('cfgVideoPosterPreview').value === 'true', stream_chunk_timeout: parseInt($('cfgStreamChunkTimeout').value) || 120, stream_first_response_timeout: parseInt($('cfgStreamFirstResponseTimeout').value) || 30, stream_total_timeout: parseInt($('cfgStreamTotalTimeout').value) || 600, max_retry: Number.isFinite(maxRetryRaw) && maxRetryRaw > 0 ? maxRetryRaw : 3, retry_status_codes: retryCodes, retry_on_network_error: $('cfgRetryOnNetwork').value === 'true' }; try { const r = await apiRequest('/api/settings'); if (!r) return; const d = await r.json(); if (!d.success) return showToast('加载配置失败', 'error'); const s = await apiRequest('/api/settings', { method: 'POST', body: JSON.stringify({ global_config: d.data.global, grok_config: kc }) }); if (!s) return; const sd = await s.json(); sd.success ? showToast('Grok配置保存成功', 'success') : showToast('保存失败: ' + (sd.error || '未知错误'), 'error') } catch (e) { showToast('保存失败: ' + e.message, 'error') } };
+    const saveGrokSettings = async () => { const pu = $('cfgProxyUrl').value.trim(), cf = $('cfgCfClearance').value.trim(); const cleanCf = cf.startsWith('cf_clearance=') ? cf.split('cf_clearance=')[1] : cf; const retryCodesStr = $('cfgRetryStatusCodes').value.trim(); const retryCodes = retryCodesStr ? retryCodesStr.split(',').map(c => parseInt(c.trim())).filter(c => !isNaN(c)) : [401, 429]; const maxRetryRaw = parseInt($('cfgMaxRetry').value); const backoffBaseRaw = parseFloat($('cfgRetryBackoffBase').value); const backoffFactorRaw = parseFloat($('cfgRetryBackoffFactor').value); const backoffMaxRaw = parseFloat($('cfgRetryBackoffMax').value); const kc = { api_key: $('cfgApiKey').value, proxy_url: pu, proxy_pool_url: $('cfgProxyPoolUrl').value.trim(), proxy_pool_interval: parseInt($('cfgProxyPoolInterval').value) || 300, cache_proxy_url: pu ? $('cfgCacheProxyUrl').value : '', cf_clearance: cleanCf, x_statsig_id: $('cfgStatsigId').value, dynamic_statsig: $('cfgDynamicStatsig').checked, filtered_tags: $('cfgFilteredTags').value, show_thinking: $('cfgShowThinking').value === 'true', temporary: $('cfgTemporary').value === 'true', video_poster_preview: $('cfgVideoPosterPreview').value === 'true', stream_chunk_timeout: parseInt($('cfgStreamChunkTimeout').value) || 120, stream_first_response_timeout: parseInt($('cfgStreamFirstResponseTimeout').value) || 30, stream_total_timeout: parseInt($('cfgStreamTotalTimeout').value) || 600, max_retry: Number.isFinite(maxRetryRaw) && maxRetryRaw > 0 ? maxRetryRaw : 3, retry_backoff_base: Number.isFinite(backoffBaseRaw) && backoffBaseRaw >= 0 ? backoffBaseRaw : 1, retry_backoff_factor: Number.isFinite(backoffFactorRaw) && backoffFactorRaw >= 1 ? backoffFactorRaw : 2, retry_backoff_max: Number.isFinite(backoffMaxRaw) && backoffMaxRaw >= 0 ? backoffMaxRaw : 30, retry_status_codes: retryCodes, retry_on_network_error: $('cfgRetryOnNetwork').value === 'true' }; try { const r = await apiRequest('/api/settings'); if (!r) return; const d = await r.json(); if (!d.success) return showToast('加载配置失败', 'error'); const s = await apiRequest('/api/settings', { method: 'POST', body: JSON.stringify({ global_config: d.data.global, grok_config: kc }) }); if (!s) return; const sd = await s.json(); sd.success ? showToast('Grok配置保存成功', 'success') : showToast('保存失败: ' + (sd.error || '未知错误'), 'error') } catch (e) { showToast('保存失败: ' + e.message, 'error') } };
     const updateHoverCardPosition = c => { const t = c.querySelector('.hover-card-trigger'), ct = c.querySelector('.hover-card-content'); if (!t || !ct) return; const { top, bottom } = t.getBoundingClientRect(), h = window.innerHeight; ct.classList.remove('top', 'bottom'); const { visibility: v, opacity: o } = getComputedStyle(ct); Object.assign(ct.style, { visibility: 'hidden', opacity: '1' }); const ch = ct.offsetHeight; Object.assign(ct.style, { visibility: v, opacity: o }); ct.classList.add(top > ch + 10 ? 'top' : h - bottom > ch + 10 ? 'bottom' : 'top') };
     const loadStorageMode = async () => { const modeConfig = { MYSQL: { classes: ['bg-blue-50', 'text-blue-700', 'border-blue-200'], tooltip: '数据库连接模式 - 数据持久化存储，修改配置时可能稍慢但更安全' }, REDIS: { classes: ['bg-purple-50', 'text-purple-700', 'border-purple-200'], tooltip: 'Redis缓存模式 - 高速内存存储，数据持久化且读写性能极佳' }, FILE: { classes: ['bg-green-50', 'text-green-700', 'border-green-200'], tooltip: '文件存储模式 - 本地文件存储，读写速度快' } }; const applyMode = (mode) => { $('storageModeText').textContent = mode; const config = modeConfig[mode] || modeConfig.FILE; $('storageMode').classList.add(...config.classes); $('storageModeTooltip').textContent = config.tooltip; updateHoverCardPosition($('storageMode').closest('.hover-card')) }; try { const r = await apiRequest('/api/storage/mode'); if (!r) return; const d = await r.json(); d.success && applyMode(d.data.mode) } catch (e) { console.error('加载存储模式失败:', e); applyMode('FILE') } };
     window.addEventListener('DOMContentLoaded', () => { loadStorageMode(); refreshTokens(); initCacheViewer(); startRefreshPolling(); setInterval(() => { loadStats(); updateRemaining() }, 30000); window.addEventListener('resize', () => { const hoverCard = $('storageMode').closest('.hover-card'); hoverCard && updateHoverCardPosition(hoverCard) }); const hoverCard = $('storageMode').closest('.hover-card'), trigger = hoverCard?.querySelector('.hover-card-trigger'), content = hoverCard?.querySelector('.hover-card-content'); if (trigger && content) { trigger.addEventListener('mouseenter', () => { content.style.opacity = '1'; content.style.visibility = 'visible' }); trigger.addEventListener('mouseleave', () => { content.style.opacity = '0'; content.style.visibility = 'hidden' }) }; $('cfgProxyUrl').addEventListener('input', updateCacheProxyReadonly); $('cfgDynamicStatsig').addEventListener('change', updateStatsigIdState) });

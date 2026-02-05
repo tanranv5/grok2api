@@ -31,6 +31,9 @@ export interface GrokSettings {
   max_retry?: number;
   retry_status_codes?: number[];
   retry_on_network_error?: boolean;
+  retry_backoff_base?: number;
+  retry_backoff_factor?: number;
+  retry_backoff_max?: number;
 }
 
 export interface SettingsBundle {
@@ -67,6 +70,9 @@ const DEFAULTS: SettingsBundle = {
     max_retry: 3,
     retry_status_codes: [401, 429],
     retry_on_network_error: true,
+    retry_backoff_base: 1,
+    retry_backoff_factor: 2,
+    retry_backoff_max: 30,
   },
 };
 

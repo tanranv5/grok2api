@@ -1,6 +1,8 @@
 {
   "aliases": {
-    "grok-imagine": "grok-imagine-1.0"
+    "grok-imagine": "grok-imagine-1.0",
+    "grok-4-1": "grok-4.1",
+    "grok-4-1-thinking-1129": "grok-4.1-thinking"
   },
   "models": [
     {

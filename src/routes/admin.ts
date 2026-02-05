@@ -387,7 +387,7 @@ adminRoutes.post("/api/tokens/refresh-selected", requireAdminAuth, async (c) => 
       }
     }
 
-    const body = (await c.req.json().catch(() => ({}))) as { tokens?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { tokens?: unknown; cursor?: unknown; limit?: unknown };
     const tokensInput = Array.isArray(body.tokens) ? body.tokens : [];
     const tokens = Array.from(
       new Set(
@@ -400,12 +400,33 @@ adminRoutes.post("/api/tokens/refresh-selected", requireAdminAuth, async (c) => 
       return c.json({ success: false, message: "未提供 Token 列表" });
     }
 
+    const cursor = Math.max(0, Number(body.cursor ?? 0) || 0);
+    const limitRaw = Number(body.limit ?? MAX_REFRESH_BATCH);
+    const limit = Math.max(1, Math.min(MAX_REFRESH_BATCH, Number.isFinite(limitRaw) ? limitRaw : MAX_REFRESH_BATCH));
+    const total = tokens.length;
+
+    if (cursor >= total) {
+      await setRefreshProgress(c.env.DB, {
+        running: false,
+        current: total,
+        total,
+        success: progress.success,
+        failed: progress.failed,
+      });
+      return c.json({ success: true, message: "刷新已完成", data: { started: false, cursor: total, total, done: true } });
+    }
+
+    const tokensSlice = tokens.slice(cursor, cursor + limit);
+    const nextCursor = Math.min(cursor + tokensSlice.length, total);
+    const baseSuccess = cursor > 0 ? progress.success : 0;
+    const baseFailed = cursor > 0 ? progress.failed : 0;
+
     await setRefreshProgress(c.env.DB, {
       running: true,
-      current: 0,
-      total: tokens.length,
-      success: 0,
-      failed: 0,
+      current: cursor,
+      total,
+      success: baseSuccess,
+      failed: baseFailed,
     });
 
     const settings = await getSettings(c.env);
@@ -417,14 +438,14 @@ adminRoutes.post("/api/tokens/refresh-selected", requireAdminAuth, async (c) => 
         let failed = 0;
         let completed = 0;
         let idx = 0;
-        const concurrency = Math.min(10, tokens.length);
+        const concurrency = Math.min(10, tokensSlice.length);
 
         const runOne = async () => {
           while (true) {
             const i = idx;
-            if (i >= tokens.length) return;
+            if (i >= tokensSlice.length) return;
             idx += 1;
-            const token = tokens[i]!;
+            const token = tokensSlice[i]!;
             const cookie = cf ? `sso-rw=${token};sso=${token};${cf}` : `sso-rw=${token};sso=${token}`;
             try {
               const r = await checkRateLimits(cookie, settings.grok, RATE_LIMIT_MODEL);
@@ -440,13 +461,13 @@ adminRoutes.post("/api/tokens/refresh-selected", requireAdminAuth, async (c) => 
               failed += 1;
             }
             completed += 1;
-            if (completed % 5 === 0 || completed === tokens.length) {
+            if (completed % 5 === 0 || completed === tokensSlice.length) {
               await setRefreshProgress(c.env.DB, {
                 running: true,
-                current: completed,
-                total: tokens.length,
-                success,
-                failed,
+                current: cursor + completed,
+                total,
+                success: baseSuccess + success,
+                failed: baseFailed + failed,
               });
             }
           }
@@ -457,16 +478,20 @@ adminRoutes.post("/api/tokens/refresh-selected", requireAdminAuth, async (c) => 
         } finally {
           await setRefreshProgress(c.env.DB, {
             running: false,
-            current: tokens.length,
-            total: tokens.length,
-            success,
-            failed,
+            current: nextCursor,
+            total,
+            success: baseSuccess + success,
+            failed: baseFailed + failed,
           });
         }
       })(),
     );
 
-    return c.json({ success: true, message: "刷新任务已启动", data: { started: true, total: tokens.length } });
+    return c.json({
+      success: true,
+      message: "刷新任务已启动",
+      data: { started: true, cursor: nextCursor, total, batch: tokensSlice.length, done: nextCursor >= total },
+    });
   } catch (e) {
     return c.json(
       jsonError(`刷新失败: ${e instanceof Error ? e.message : String(e)}`, "REFRESH_SELECTED_ERROR"),

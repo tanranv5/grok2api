@@ -212,13 +212,19 @@ class ChatRequestBuilder:
         if think is None:
             think = get_config("grok.thinking", False)
         
+        merged_attachments: List[str] = []
+        if file_attachments:
+            merged_attachments.extend(file_attachments)
+        if image_attachments:
+            merged_attachments.extend(image_attachments)
+
         return {
             "temporary": temporary,
             "modelName": model,
             "modelMode": mode,
             "message": message,
-            "fileAttachments": file_attachments or [],
-            "imageAttachments": image_attachments or [],
+            "fileAttachments": merged_attachments,
+            "imageAttachments": [],
             "disableSearch": False,
             "enableImageGeneration": True,
             "returnImageBytes": False,

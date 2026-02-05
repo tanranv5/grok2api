@@ -35,6 +35,31 @@ class RetryConfig:
         return bool(get_config("grok.retry_on_network_error", True))
 
     @staticmethod
+    def get_retry_backoff_base() -> float:
+        """获取重试退避基数（秒）"""
+        return float(get_config("grok.retry_backoff_base", 1))
+
+    @staticmethod
+    def get_retry_backoff_factor() -> float:
+        """获取重试退避倍率"""
+        return float(get_config("grok.retry_backoff_factor", 2))
+
+    @staticmethod
+    def get_retry_backoff_max() -> float:
+        """获取重试退避上限（秒）"""
+        return float(get_config("grok.retry_backoff_max", 30))
+
+    @staticmethod
+    def get_backoff_delay(attempt: int) -> float:
+        """计算退避等待时间（秒）"""
+        base = max(0.0, RetryConfig.get_retry_backoff_base())
+        factor = max(1.0, RetryConfig.get_retry_backoff_factor())
+        max_delay = max(0.0, RetryConfig.get_retry_backoff_max())
+        steps = max(0, attempt - 1)
+        delay = base * (factor ** steps)
+        return min(delay, max_delay) if max_delay > 0 else delay
+
+    @staticmethod
     def get_network_error_keywords() -> List[str]:
         """网络异常关键字（用于判定是否重试）"""
         return [
@@ -151,7 +176,7 @@ async def retry_on_status(
                 if RetryConfig.get_retry_on_network_error() and _is_network_error(e):
                     ctx.record_error(0, e)
                     if ctx.attempt <= ctx.max_retry:
-                        delay = 0.5 * (ctx.attempt + 1)
+                        delay = RetryConfig.get_backoff_delay(ctx.attempt)
                         logger.warning(
                             f"Retry {ctx.attempt}/{ctx.max_retry} for network error, "
                             f"waiting {delay}s"
@@ -170,7 +195,7 @@ async def retry_on_status(
             
             # 判断是否重试
             if ctx.should_retry(status_code):
-                delay = 0.5 * (ctx.attempt + 1)  # 渐进延迟
+                delay = RetryConfig.get_backoff_delay(ctx.attempt)
                 logger.warning(
                     f"Retry {ctx.attempt}/{ctx.max_retry} for status {status_code}, "
                     f"waiting {delay}s"

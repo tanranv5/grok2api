@@ -162,8 +162,14 @@ openAiRoutes.post("/chat/completions", async (c) => {
     }
     const imageCount = Math.max(1, Number(body.n ?? 1) || 1);
     const maxRetry = Math.max(1, Number(settingsBundle.grok.max_retry ?? 3) || 3);
+    const backoffBase = Math.max(0, Number(settingsBundle.grok.retry_backoff_base ?? 1) || 1);
+    const backoffFactor = Math.max(1, Number(settingsBundle.grok.retry_backoff_factor ?? 2) || 2);
+    const backoffMax = Math.max(0, Number(settingsBundle.grok.retry_backoff_max ?? 30) || 30);
     const retryOnNetworkError = settingsBundle.grok.retry_on_network_error !== false;
     let lastErr: string | null = null;
+    const backoffMs = (attempt: number) =>
+      Math.min(backoffMax, backoffBase * Math.pow(backoffFactor, attempt)) * 1000;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
     for (let attempt = 0; attempt < maxRetry; attempt++) {
       const chosen = await selectBestToken(c.env.DB, requestedModel);
@@ -228,7 +234,10 @@ openAiRoutes.post("/chat/completions", async (c) => {
           lastErr = `Upstream ${upstream.status}: ${txt.slice(0, 200)}`;
           await recordTokenFailure(c.env.DB, jwt, upstream.status, txt.slice(0, 200));
           await applyCooldown(c.env.DB, jwt, upstream.status);
-          if (retryCodes.includes(upstream.status) && attempt < maxRetry - 1) continue;
+          if (retryCodes.includes(upstream.status) && attempt < maxRetry - 1) {
+            await sleep(backoffMs(attempt));
+            continue;
+          }
           break;
         }
 
@@ -288,7 +297,10 @@ openAiRoutes.post("/chat/completions", async (c) => {
         lastErr = msg;
         await recordTokenFailure(c.env.DB, jwt, 500, msg);
         await applyCooldown(c.env.DB, jwt, 500);
-        if (retryOnNetworkError && isNetworkError(e) && attempt < maxRetry - 1) continue;
+        if (retryOnNetworkError && isNetworkError(e) && attempt < maxRetry - 1) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
         break;
       }
     }
