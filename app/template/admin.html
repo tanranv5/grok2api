@@ -1230,6 +1230,7 @@
 
   <script>
     let allTokens = [], filteredTokens = [], selectedTokens = new Set(), allTagsList = [];
+    let refreshAllCursor = 0, refreshAllTotal = 0, refreshAllBatch = 50, refreshAllActive = false;
     let allLogsData = [], currentLogPage = 1, logsPerPage = 20;
     const selectedKeys = new Set();
     const $ = (id) => document.getElementById(id);
@@ -1687,6 +1688,12 @@
             setRefreshUi(isRunning, current || 0, total || 0, success || 0, failed || 0);
             if (!isRunning) {
               stopRefreshPolling();
+              if (refreshAllActive && typeof current === 'number' && current < total) {
+                refreshAllCursor = current;
+                await startRefreshAllBatch();
+                return;
+              }
+              refreshAllActive = false;
               refreshHideTimer = setTimeout(() => {
                 setRefreshUi(false, current || 0, total || 0, success || 0, failed || 0);
                 $('refreshProgress')?.classList.add('hidden');
@@ -1705,11 +1712,9 @@
       await poll();
     };
 
-    const refreshAllTokens = async () => {
-      if (!confirm('确定要刷新所有Token的剩余次数吗？这可能需要一段时间...')) return;
-
+    const startRefreshAllBatch = async () => {
       try {
-        const r = await apiRequest('/api/tokens/refresh-all', { method: 'POST' });
+        const r = await apiRequest('/api/tokens/refresh-all', { method: 'POST', body: JSON.stringify({ cursor: refreshAllCursor, limit: refreshAllBatch }) });
         if (!r) return;
         const d = await r.json();
 
@@ -1720,19 +1725,32 @@
         }
 
         if (!d.success) {
+          refreshAllActive = false;
           showToast(d.message || '启动刷新失败', 'error');
           return;
         }
 
-        const total = d.data?.total || 0;
-        setRefreshUi(true, 0, total, 0, 0);
+        if (typeof d.data?.total === 'number') refreshAllTotal = d.data.total;
+        const total = refreshAllTotal || d.data?.total || 0;
+        setRefreshUi(true, refreshAllCursor, total, 0, 0);
         showToast('刷新任务已启动...', 'info');
         startRefreshPolling();
       } catch (e) {
+        refreshAllActive = false;
         showToast('刷新失败: ' + e.message, 'error');
       }
     };
+
+    const refreshAllTokens = async () => {
+      if (!confirm('确定要刷新所有Token的剩余次数吗？这可能需要一段时间...')) return;
+
+      refreshAllActive = true;
+      refreshAllCursor = 0;
+      refreshAllTotal = allTokens.length || 0;
+      await startRefreshAllBatch();
+    };
     const refreshSelectedTokens = async () => {
+      refreshAllActive = false;
       if (!selectedTokens.size) return showToast('请先选择要刷新的 Token', 'error');
       if (!confirm(`确定要刷新选中的 ${selectedTokens.size} 个 Token 吗？这可能需要一段时间...`)) return;
 

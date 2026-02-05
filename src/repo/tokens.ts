@@ -96,6 +96,19 @@ export async function listTokens(db: Env["DB"]): Promise<TokenRow[]> {
   );
 }
 
+export async function countTokens(db: Env["DB"]): Promise<number> {
+  const row = await dbFirst<{ c: number }>(db, "SELECT COUNT(1) as c FROM tokens");
+  return row?.c ?? 0;
+}
+
+export async function listTokensPaged(db: Env["DB"], limit: number, offset: number): Promise<TokenRow[]> {
+  return dbAll<TokenRow>(
+    db,
+    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count FROM tokens ORDER BY created_time DESC LIMIT ? OFFSET ?",
+    [limit, offset],
+  );
+}
+
 export async function markTokenActive(db: Env["DB"], token: string): Promise<void> {
   await dbRun(
     db,

@@ -16,9 +16,11 @@ import { displayKey } from "../utils/crypto";
 import { createAdminSession, deleteAdminSession } from "../repo/adminSessions";
 import {
   addTokens,
+  countTokens,
   deleteTokens,
   getAllTags,
   listTokens,
+  listTokensPaged,
   markTokenActive,
   tokenRowToInfo,
   updateTokenNote,
@@ -80,6 +82,7 @@ async function clearKvCacheByType(
 export const adminRoutes = new Hono<{ Bindings: Env }>();
 const RATE_LIMIT_MODEL = "grok-3";
 const REFRESH_STALE_MS = 10 * 60 * 1000;
+const MAX_REFRESH_BATCH = 50;
 
 adminRoutes.post("/api/login", async (c) => {
   try {
@@ -273,13 +276,33 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
       }
     }
 
-    const tokens = await listTokens(c.env.DB);
+    const body = (await c.req.json().catch(() => ({}))) as { cursor?: unknown; limit?: unknown };
+    const cursor = Math.max(0, Number(body.cursor ?? 0) || 0);
+    const limitRaw = Number(body.limit ?? MAX_REFRESH_BATCH);
+    const limit = Math.max(1, Math.min(MAX_REFRESH_BATCH, Number.isFinite(limitRaw) ? limitRaw : MAX_REFRESH_BATCH));
+
+    const total = await countTokens(c.env.DB);
+    if (total === 0) {
+      await setRefreshProgress(c.env.DB, { running: false, current: 0, total: 0, success: 0, failed: 0 });
+      return c.json({ success: true, message: "暂无Token", data: { started: false, cursor: 0, total: 0, done: true } });
+    }
+
+    if (cursor >= total) {
+      await setRefreshProgress(c.env.DB, { running: false, current: total, total, success: progress.success, failed: progress.failed });
+      return c.json({ success: true, message: "刷新已完成", data: { started: false, cursor: total, total, done: true } });
+    }
+
+    const tokens = await listTokensPaged(c.env.DB, limit, cursor);
+    const nextCursor = Math.min(cursor + tokens.length, total);
+    const baseSuccess = cursor > 0 ? progress.success : 0;
+    const baseFailed = cursor > 0 ? progress.failed : 0;
+
     await setRefreshProgress(c.env.DB, {
       running: true,
-      current: 0,
-      total: tokens.length,
-      success: 0,
-      failed: 0,
+      current: cursor,
+      total,
+      success: baseSuccess,
+      failed: baseFailed,
     });
 
     const settings = await getSettings(c.env);
@@ -319,10 +342,10 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
             if (completed % 5 === 0 || completed === tokens.length) {
               await setRefreshProgress(c.env.DB, {
                 running: true,
-                current: completed,
-                total: tokens.length,
-                success,
-                failed,
+                current: cursor + completed,
+                total,
+                success: baseSuccess + success,
+                failed: baseFailed + failed,
               });
             }
           }
@@ -333,16 +356,20 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
         } finally {
           await setRefreshProgress(c.env.DB, {
             running: false,
-            current: tokens.length,
-            total: tokens.length,
-            success,
-            failed,
+            current: nextCursor,
+            total,
+            success: baseSuccess + success,
+            failed: baseFailed + failed,
           });
         }
       })(),
     );
 
-    return c.json({ success: true, message: "刷新任务已启动", data: { started: true } });
+    return c.json({
+      success: true,
+      message: "刷新任务已启动",
+      data: { started: true, cursor: nextCursor, total, batch: tokens.length, done: nextCursor >= total },
+    });
   } catch (e) {
     return c.json(jsonError(`刷新失败: ${e instanceof Error ? e.message : String(e)}`, "REFRESH_ALL_ERROR"), 500);
   }
