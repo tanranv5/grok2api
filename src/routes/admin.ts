@@ -100,6 +100,12 @@ const RATE_LIMIT_MODEL = "grok-3";
 const REFRESH_STALE_MS = 10 * 60 * 1000;
 const MAX_REFRESH_BATCH = 50;
 const LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens";
+const VOICE_SIGNAL_PROXY_PREFIX = "/api/v1/admin/voice/signal/";
+
+function buildVoiceSignalProxyUrl(reqUrl: URL, sessionToken: string): string {
+  const proto = reqUrl.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${reqUrl.host}${VOICE_SIGNAL_PROXY_PREFIX}${encodeURIComponent(sessionToken)}`;
+}
 
 adminRoutes.post("/api/login", async (c) => {
   try {
@@ -191,6 +197,7 @@ adminRoutes.get("/api/v1/admin/voice/token", requireAdminAuth, async (c) => {
       server_url?: string;
     };
     if (!data?.token) return c.json({ error: "Missing voice token" }, 502);
+    const adminSession = parseBearer(c.req.header("Authorization") ?? null) ?? "";
     const livekitUrl =
       data.url ||
       data.livekitUrl ||
@@ -198,11 +205,98 @@ adminRoutes.get("/api/v1/admin/voice/token", requireAdminAuth, async (c) => {
       data.serverUrl ||
       data.server_url ||
       "wss://livekit.grok.com";
-    return c.json({ token: data.token, url: livekitUrl, participant_name: "", room_name: "" });
+    const reqUrl = new URL(c.req.url);
+    const proxyUrl = adminSession ? buildVoiceSignalProxyUrl(reqUrl, adminSession) : livekitUrl;
+    return c.json({
+      token: data.token,
+      url: proxyUrl,
+      direct_url: livekitUrl,
+      participant_name: "",
+      room_name: "",
+    });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e), code: "voice_error" }, 500);
   }
 });
+
+async function handleVoiceSignalProxy(c: any): Promise<Response> {
+  const sessionRaw = String(c.req.param("session") ?? "");
+  const sessionToken = decodeURIComponent(sessionRaw);
+  if (!sessionToken) return c.text("Unauthorized", 401);
+  const ok = await verifyAdminSession(c.env.DB, sessionToken);
+  if (!ok) return c.text("Unauthorized", 401);
+  if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") return c.text("Expected websocket", 426);
+
+  const reqUrl = new URL(c.req.url);
+  const prefix = `${VOICE_SIGNAL_PROXY_PREFIX}${encodeURIComponent(sessionToken)}`;
+  const suffix = reqUrl.pathname.startsWith(prefix) ? reqUrl.pathname.slice(prefix.length) : "";
+  const upstreamPath = suffix && suffix !== "/" ? suffix : "/rtc";
+  const upstreamUrl = new URL(`https://livekit.grok.com${upstreamPath}`);
+  upstreamUrl.search = reqUrl.search;
+
+  const upstreamResp = await fetch(upstreamUrl.toString(), {
+    method: "GET",
+    headers: {
+      Upgrade: "websocket",
+      Connection: "Upgrade",
+      Origin: "https://grok.com",
+      "User-Agent": c.req.header("User-Agent") || "Mozilla/5.0",
+    },
+  });
+  const upstreamWs = (upstreamResp as any).webSocket as WebSocket | undefined;
+  if (!upstreamWs) {
+    const detail = await upstreamResp.text().catch(() => "");
+    return c.text(`Upstream signal failed: ${upstreamResp.status} ${detail.slice(0, 200)}`, 502);
+  }
+
+  const pair = new WebSocketPair();
+  const client = pair[0];
+  const server = pair[1];
+  server.accept();
+  upstreamWs.accept();
+
+  let closed = false;
+  const closeBoth = (code: number, reason: string) => {
+    if (closed) return;
+    closed = true;
+    try {
+      server.close(code, reason);
+    } catch {
+      // ignore
+    }
+    try {
+      upstreamWs.close(code, reason);
+    } catch {
+      // ignore
+    }
+  };
+
+  server.addEventListener("message", (evt) => {
+    if (closed) return;
+    try {
+      upstreamWs.send(evt.data as any);
+    } catch {
+      closeBoth(1011, "upstream_send_error");
+    }
+  });
+  upstreamWs.addEventListener("message", (evt) => {
+    if (closed) return;
+    try {
+      server.send(evt.data as any);
+    } catch {
+      closeBoth(1011, "client_send_error");
+    }
+  });
+  server.addEventListener("close", () => closeBoth(1000, "client_closed"));
+  upstreamWs.addEventListener("close", () => closeBoth(1000, "upstream_closed"));
+  server.addEventListener("error", () => closeBoth(1011, "client_error"));
+  upstreamWs.addEventListener("error", () => closeBoth(1011, "upstream_error"));
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+adminRoutes.get("/api/v1/admin/voice/signal/:session", handleVoiceSignalProxy);
+adminRoutes.get("/api/v1/admin/voice/signal/:session/*", handleVoiceSignalProxy);
 
 adminRoutes.post("/api/v1/admin/imagine/stream", requireAdminAuth, async (c) => {
   try {
