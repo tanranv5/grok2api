@@ -8,6 +8,7 @@
   <link rel="icon" type="image/png" href="/static/favicon.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.7.3/dist/livekit-client.umd.min.js"></script>
   <style>
     @keyframes slide-up {
       from {
@@ -1144,9 +1145,91 @@
     </div>
 
     <div id="panelVoice" class="hidden">
-      <div class="rounded-lg border border-border bg-background p-5">
-        <h3 class="text-base font-semibold">Voice Live 陪聊</h3>
-        <p class="text-sm text-muted-foreground mt-2">已拆分为独立标签页，后续会继续补齐当前页内完整会话面板。</p>
+      <div class="mb-4">
+        <h2 class="text-2xl font-semibold">Voice Live 陪聊</h2>
+        <p class="text-sm text-muted-foreground mt-1">使用 LiveKit 连接 Grok Voice，支持语音配置和会话日志。</p>
+      </div>
+      <div class="h-px bg-border mb-4"></div>
+
+      <div class="grid gap-4 lg:grid-cols-3">
+        <div class="rounded-lg border border-border bg-background p-4 lg:col-span-2">
+          <h3 class="text-base font-semibold mb-3">连接设置</h3>
+          <div class="grid gap-3 md:grid-cols-2">
+            <div>
+              <label class="text-sm text-muted-foreground">声音 (Voice)</label>
+              <select id="voiceSelectInTab" class="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm">
+                <option value="ara" selected>Ara (Upbeat Female)</option>
+                <option value="eve">Eve (Soothing Female)</option>
+                <option value="leo">Leo (British Male)</option>
+                <option value="rex">Rex (Calm Male)</option>
+                <option value="sal">Sal (Smooth Male)</option>
+                <option value="gork">Gork (Lazy Male)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-sm text-muted-foreground">个性 (Personality)</label>
+              <select id="voicePersonalityInTab" class="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm">
+                <option value="assistant" selected>Assistant (Default)</option>
+                <option value="custom">Custom</option>
+                <option value="therapist">Therapist</option>
+                <option value="storyteller">Storyteller</option>
+                <option value="kids_story_time">Kids Story Time</option>
+                <option value="kids_trivia_game">Kids Trivia Game</option>
+                <option value="meditation">Meditation</option>
+                <option value="doc">Grok "Doc"</option>
+                <option value="unhinged">Unhinged 18+</option>
+                <option value="sexy">Sexy 18+</option>
+                <option value="motivation">Motivation 18+</option>
+                <option value="conspiracy">Conspiracy</option>
+                <option value="romantic">Romantic 18+</option>
+                <option value="argumentative">Argumentative 18+</option>
+              </select>
+            </div>
+            <div class="md:col-span-2">
+              <label class="text-sm text-muted-foreground block">语速 <span id="voiceSpeedValueInTab">1.0</span>x</label>
+              <input id="voiceSpeedInTab" type="range" min="0.5" max="2.0" step="0.1" value="1.0" class="w-full mt-1">
+            </div>
+          </div>
+          <div class="flex items-center gap-2 mt-4">
+            <button id="voiceStartBtnInTab"
+              class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4">开始会话</button>
+            <button id="voiceStopBtnInTab"
+              class="hidden inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent h-9 px-4">停止会话</button>
+            <button id="voiceClearLogBtnInTab"
+              class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent h-9 px-4">清空日志</button>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-base font-semibold mb-3">会话状态</h3>
+          <div class="space-y-2 text-sm">
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span class="text-muted-foreground">状态</span>
+              <span id="voiceStatusTextInTab">未连接</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span class="text-muted-foreground">Voice</span>
+              <span id="voiceMetaVoiceInTab">-</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span class="text-muted-foreground">Personality</span>
+              <span id="voiceMetaPersonalityInTab">-</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span class="text-muted-foreground">Speed</span>
+              <span id="voiceMetaSpeedInTab">-</span>
+            </div>
+            <div class="rounded-md border border-border px-3 py-2">
+              <div class="text-muted-foreground mb-1">音频输出</div>
+              <div id="voiceAudioRootInTab"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-border bg-background p-4 mt-4">
+        <h3 class="text-base font-semibold mb-3">会话日志</h3>
+        <div id="voiceLogInTab" class="rounded-md border border-border bg-muted/20 p-3 h-72 overflow-auto text-xs font-mono leading-5"></div>
       </div>
     </div>
   </main>
@@ -1345,6 +1428,8 @@
     let imagineRunning = false;
     let imagineImageCount = 0;
     let imagineBound = false;
+    let voiceBound = false;
+    let voiceRoom = null;
     let allLogsData = [], currentLogPage = 1, logsPerPage = 20;
     const selectedKeys = new Set();
     const $ = (id) => document.getElementById(id);
@@ -1505,6 +1590,133 @@
       $('imagineClearBtn')?.addEventListener('click', imagineClear);
     };
 
+    const voiceLog = (message, level = 'info') => {
+      const box = $('voiceLogInTab');
+      if (!box) return;
+      const line = document.createElement('div');
+      const time = new Date().toLocaleTimeString('zh-CN');
+      line.textContent = `[${time}] ${message}`;
+      if (level === 'error') line.className = 'text-red-600';
+      if (level === 'warn') line.className = 'text-orange-600';
+      box.prepend(line);
+    };
+    const voiceSetStatus = (text) => {
+      const el = $('voiceStatusTextInTab');
+      if (el) el.textContent = text;
+    };
+    const voiceSetButtons = (connected) => {
+      const start = $('voiceStartBtnInTab');
+      const stop = $('voiceStopBtnInTab');
+      if (!start || !stop) return;
+      start.classList.toggle('hidden', connected);
+      stop.classList.toggle('hidden', !connected);
+      start.disabled = connected;
+    };
+    const voiceUpdateMeta = () => {
+      const voice = $('voiceSelectInTab')?.value || '-';
+      const personality = $('voicePersonalityInTab')?.value || '-';
+      const speed = $('voiceSpeedInTab')?.value || '1.0';
+      const speedValue = $('voiceSpeedValueInTab');
+      if (speedValue) speedValue.textContent = Number(speed).toFixed(1);
+      const metaVoice = $('voiceMetaVoiceInTab');
+      const metaPersonality = $('voiceMetaPersonalityInTab');
+      const metaSpeed = $('voiceMetaSpeedInTab');
+      if (metaVoice) metaVoice.textContent = voice;
+      if (metaPersonality) metaPersonality.textContent = personality;
+      if (metaSpeed) metaSpeed.textContent = `${Number(speed).toFixed(1)}x`;
+    };
+    const voiceClearLog = () => {
+      const box = $('voiceLogInTab');
+      if (box) box.innerHTML = '';
+    };
+    const voiceResetUi = () => {
+      voiceSetStatus('未连接');
+      voiceSetButtons(false);
+      const audioRoot = $('voiceAudioRootInTab');
+      if (audioRoot) audioRoot.innerHTML = '';
+      voiceRoom = null;
+    };
+    const voiceStartSession = async () => {
+      if (voiceRoom) return;
+      const lk = window.LiveKitClient || window.LivekitClient;
+      if (!lk?.Room || !lk?.createLocalTracks || !lk?.RoomEvent) {
+        voiceLog('LiveKit SDK 未加载成功', 'error');
+        return showToast('LiveKit SDK 未加载成功', 'error');
+      }
+
+      const token = localStorage.getItem('adminToken') || '';
+      if (!token) return showToast('登录状态失效，请重新登录', 'error');
+
+      const voice = $('voiceSelectInTab')?.value || 'ara';
+      const personality = $('voicePersonalityInTab')?.value || 'assistant';
+      const speed = $('voiceSpeedInTab')?.value || '1.0';
+
+      voiceUpdateMeta();
+      voiceSetStatus('连接中');
+      voiceLog(`开始连接 Voice=${voice}, Personality=${personality}, Speed=${speed}x`);
+
+      try {
+        const params = new URLSearchParams({ voice, personality, speed });
+        const resp = await fetch(`/api/v1/admin/voice/token?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!resp.ok) throw new Error(`获取 Voice Token 失败: ${resp.status}`);
+        const data = await resp.json();
+        if (!data?.token || !data?.url) throw new Error('Voice Token 返回无效');
+
+        const room = new lk.Room({ adaptiveStream: true, dynacast: true });
+        voiceRoom = room;
+        room.on(lk.RoomEvent.TrackSubscribed, (track) => {
+          if (track?.kind === (lk.Track?.Kind?.Audio || 'audio')) {
+            const el = track.attach();
+            const audioRoot = $('voiceAudioRootInTab');
+            if (audioRoot) audioRoot.appendChild(el);
+          }
+        });
+        room.on(lk.RoomEvent.Disconnected, () => {
+          voiceLog('连接已断开', 'warn');
+          voiceResetUi();
+        });
+
+        await room.connect(data.url, data.token);
+        voiceLog('已连接 LiveKit');
+        voiceSetStatus('通话中');
+        voiceSetButtons(true);
+
+        const tracks = await lk.createLocalTracks({ audio: true, video: false });
+        for (const t of tracks) await room.localParticipant.publishTrack(t);
+        voiceLog('麦克风已发布', 'info');
+        showToast('Voice 连接成功', 'success');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        voiceLog(msg, 'error');
+        voiceSetStatus('连接错误');
+        voiceSetButtons(false);
+        voiceRoom = null;
+        showToast(msg, 'error');
+      }
+    };
+    const voiceStopSession = async () => {
+      try {
+        if (voiceRoom) await voiceRoom.disconnect();
+      } catch { }
+      voiceResetUi();
+      voiceLog('已停止会话', 'warn');
+    };
+    const bindVoicePanel = () => {
+      if (voiceBound) return;
+      voiceBound = true;
+      $('voiceStartBtnInTab')?.addEventListener('click', voiceStartSession);
+      $('voiceStopBtnInTab')?.addEventListener('click', voiceStopSession);
+      $('voiceClearLogBtnInTab')?.addEventListener('click', voiceClearLog);
+      $('voiceSelectInTab')?.addEventListener('change', voiceUpdateMeta);
+      $('voicePersonalityInTab')?.addEventListener('change', voiceUpdateMeta);
+      $('voiceSpeedInTab')?.addEventListener('input', voiceUpdateMeta);
+      voiceUpdateMeta();
+      voiceSetStatus('未连接');
+      voiceSetButtons(false);
+    };
+
     const switchTab = (target) => {
       ['tokens', 'statistics', 'keys', 'logs', 'cache', 'settings', 'imagine', 'voice'].forEach(name => {
         const cap = name.charAt(0).toUpperCase() + name.slice(1);
@@ -1527,6 +1739,7 @@
       if (target === 'keys') loadKeys();
       if (target === 'logs') loadLogs();
       if (target === 'imagine') bindImaginePanel();
+      if (target === 'voice') bindVoicePanel();
     };
 
     // --- Key 管理 ---
