@@ -67,6 +67,10 @@ app.get("/manage", async (c) => {
   return fetchAsset(c, "/admin.html");
 });
 
+// 兼容历史路径，避免前端请求 /admin/imagine /admin/voice 时出现 404。
+app.get("/admin/imagine", (c) => c.redirect("/imagine", 302));
+app.get("/admin/voice", (c) => c.redirect("/voice", 302));
+
 app.get("/imagine", async (c) => {
   return fetchAsset(c, "/imagine/imagine.html");
 });
