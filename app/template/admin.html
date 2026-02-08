@@ -286,9 +286,9 @@
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">缓存预览</button>
         <button onclick="switchTab('settings')" id="tabSettings"
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Setting 配置</button>
-        <button onclick="window.location.href='/imagine'" id="tabImagine"
+        <button onclick="switchTab('imagine')" id="tabImagine"
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Imagine 瀑布流</button>
-        <button onclick="window.location.href='/voice'" id="tabVoice"
+        <button onclick="switchTab('voice')" id="tabVoice"
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Voice Live 陪聊</button>
       </nav>
     </div>
@@ -1066,6 +1066,89 @@
         </div>
       </div>
     </div>
+
+    <div id="panelImagine" class="hidden">
+      <div class="mb-4">
+        <h2 class="text-2xl font-semibold">Imagine 瀑布流</h2>
+        <p class="text-sm text-muted-foreground mt-1">通过 WebSocket 持续生成图片，实时展示 base64 瀑布流。</p>
+      </div>
+      <div class="h-px bg-border mb-4"></div>
+
+      <div class="grid gap-4 md:grid-cols-3 mb-4">
+        <div class="rounded-lg border border-border bg-background p-4 md:col-span-2">
+          <h3 class="text-base font-semibold mb-3">生成设置</h3>
+          <div class="grid gap-3 md:grid-cols-2">
+            <div class="md:col-span-2">
+              <label class="text-sm text-muted-foreground">提示词</label>
+              <textarea id="imaginePromptInput" rows="4"
+                class="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                placeholder="描述你想要的画面，例如：未来城市霓虹雨夜，广角摄影"></textarea>
+            </div>
+            <div>
+              <label class="text-sm text-muted-foreground">宽高比</label>
+              <select id="imagineRatioSelect" class="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm">
+                <option value="2:3" selected>2:3 竖图</option>
+                <option value="1:1">1:1 方图</option>
+                <option value="3:2">3:2 横图</option>
+                <option value="16:9">16:9 宽屏</option>
+                <option value="9:16">9:16 竖屏</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-sm text-muted-foreground">并发数量</label>
+              <select id="imagineConcurrentSelect" class="w-full mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm">
+                <option value="1" selected>1 个任务</option>
+                <option value="2">2 个任务</option>
+                <option value="3">3 个任务</option>
+              </select>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 mt-4">
+            <button id="imagineStartBtn"
+              class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4">开始</button>
+            <button id="imagineStopBtn"
+              class="hidden inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent h-9 px-4">停止</button>
+            <button id="imagineClearBtn"
+              class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent h-9 px-4">清空</button>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-border bg-background p-4">
+          <h3 class="text-base font-semibold mb-3">连接状态</h3>
+          <div class="space-y-2 text-sm">
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span class="text-muted-foreground">状态</span>
+              <span id="imagineStatusText">未连接</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span class="text-muted-foreground">图片数量</span>
+              <span id="imagineCountValue">0</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span class="text-muted-foreground">活跃任务</span>
+              <span id="imagineActiveValue">0</span>
+            </div>
+            <div class="rounded-md border border-border px-3 py-2">
+              <div class="text-muted-foreground mb-1">最后错误</div>
+              <div id="imagineErrorValue" class="text-xs break-all">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-border bg-background p-4">
+        <h3 class="text-base font-semibold mb-3">瀑布流</h3>
+        <div id="imagineWaterfall" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"></div>
+        <div id="imagineEmptyState" class="text-sm text-muted-foreground py-10 text-center">等待连接中...</div>
+      </div>
+    </div>
+
+    <div id="panelVoice" class="hidden">
+      <div class="rounded-lg border border-border bg-background p-5">
+        <h3 class="text-base font-semibold">Voice Live 陪聊</h3>
+        <p class="text-sm text-muted-foreground mt-2">已拆分为独立标签页，后续会继续补齐当前页内完整会话面板。</p>
+      </div>
+    </div>
   </main>
 
   <!-- 编辑信息模态框 -->
@@ -1258,6 +1341,10 @@
     let refreshAllCursor = 0, refreshAllTotal = 0, refreshAllBatch = 50, refreshAllActive = false;
     let refreshSelectedCursor = 0, refreshSelectedTotal = 0, refreshSelectedBatch = 50, refreshSelectedActive = false;
     let refreshSelectedTokensList = [];
+    let imagineSockets = [];
+    let imagineRunning = false;
+    let imagineImageCount = 0;
+    let imagineBound = false;
     let allLogsData = [], currentLogPage = 1, logsPerPage = 20;
     const selectedKeys = new Set();
     const $ = (id) => document.getElementById(id);
@@ -1287,8 +1374,139 @@
 
     const logout = () => { localStorage.removeItem('adminToken'); window.location.href = '/login' };
 
+    const imagineSetStatus = (text) => { const el = $('imagineStatusText'); if (el) el.textContent = text };
+    const imagineSetError = (text) => { const el = $('imagineErrorValue'); if (el) el.textContent = text || '-' };
+    const imagineSetCount = (count) => { const el = $('imagineCountValue'); if (el) el.textContent = String(count) };
+    const imagineSetActive = () => {
+      const active = imagineSockets.filter(ws => ws && ws.readyState === WebSocket.OPEN).length;
+      const el = $('imagineActiveValue');
+      if (el) el.textContent = String(active);
+    };
+    const imagineSetButtons = (running) => {
+      const start = $('imagineStartBtn');
+      const stop = $('imagineStopBtn');
+      if (!start || !stop) return;
+      start.classList.toggle('hidden', running);
+      stop.classList.toggle('hidden', !running);
+      start.disabled = running;
+    };
+    const imagineAppendImage = (b64, sequence) => {
+      const grid = $('imagineWaterfall');
+      const empty = $('imagineEmptyState');
+      if (!grid || !b64) return;
+      if (empty) empty.classList.add('hidden');
+      const item = document.createElement('div');
+      item.className = 'rounded-md overflow-hidden border border-border bg-muted/10';
+      const img = document.createElement('img');
+      img.src = `data:image/jpeg;base64,${b64}`;
+      img.alt = `image-${sequence}`;
+      img.className = 'w-full object-cover';
+      const meta = document.createElement('div');
+      meta.className = 'px-2 py-1 text-xs text-muted-foreground';
+      meta.textContent = `#${sequence}`;
+      item.appendChild(img);
+      item.appendChild(meta);
+      grid.prepend(item);
+    };
+    const imagineSendStart = (ws, prompt, aspectRatio) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'start', prompt, aspect_ratio: aspectRatio }));
+    };
+    const imagineStart = async () => {
+      if (imagineRunning) return showToast('任务已在运行中', 'info');
+      const prompt = ($('imaginePromptInput')?.value || '').trim();
+      if (!prompt) return showToast('请输入提示词', 'error');
+      const ratio = $('imagineRatioSelect')?.value || '2:3';
+      const concurrent = parseInt($('imagineConcurrentSelect')?.value || '1', 10);
+      const token = localStorage.getItem('adminToken') || '';
+      if (!token) return showToast('登录状态失效，请重新登录', 'error');
+
+      imagineRunning = true;
+      imagineSetButtons(true);
+      imagineSetStatus('连接中');
+      imagineSetError('');
+
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const wsUrl = `${protocol}://${window.location.host}/api/v1/admin/imagine/ws?api_key=${encodeURIComponent(token)}`;
+      imagineSockets = [];
+
+      for (let i = 0; i < Math.max(1, concurrent); i++) {
+        const ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+          imagineSetStatus('生成中');
+          imagineSetActive();
+          imagineSendStart(ws, prompt, ratio);
+        };
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(String(event.data || '{}'));
+            if (data.type === 'image') {
+              imagineImageCount += 1;
+              imagineSetCount(imagineImageCount);
+              imagineSetError('');
+              imagineAppendImage(data.b64_json, data.sequence || imagineImageCount);
+              return;
+            }
+            if (data.type === 'error') {
+              const msg = data.message || '生成失败';
+              imagineSetError(msg);
+              showToast(msg, 'error');
+              return;
+            }
+            if (data.type === 'status' && data.status === 'stopped') {
+              imagineSetStatus('已停止');
+            }
+          } catch (err) {
+            imagineSetError('消息解析失败');
+          }
+        };
+        ws.onerror = () => {
+          imagineSetError('连接异常');
+          imagineSetStatus('连接异常');
+        };
+        ws.onclose = () => {
+          imagineSetActive();
+          const hasOpen = imagineSockets.some(w => w && w.readyState === WebSocket.OPEN);
+          if (!hasOpen) {
+            imagineRunning = false;
+            imagineSetButtons(false);
+            imagineSetStatus('未连接');
+          }
+        };
+        imagineSockets.push(ws);
+      }
+    };
+    const imagineStop = () => {
+      imagineSockets.forEach((ws) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try { ws.send(JSON.stringify({ type: 'stop' })); } catch { }
+        try { ws.close(1000, 'client stop'); } catch { }
+      });
+      imagineSockets = [];
+      imagineRunning = false;
+      imagineSetButtons(false);
+      imagineSetStatus('已停止');
+      imagineSetActive();
+    };
+    const imagineClear = () => {
+      const grid = $('imagineWaterfall');
+      const empty = $('imagineEmptyState');
+      if (grid) grid.innerHTML = '';
+      if (empty) empty.classList.remove('hidden');
+      imagineImageCount = 0;
+      imagineSetCount(0);
+      imagineSetError('');
+    };
+    const bindImaginePanel = () => {
+      if (imagineBound) return;
+      imagineBound = true;
+      $('imagineStartBtn')?.addEventListener('click', imagineStart);
+      $('imagineStopBtn')?.addEventListener('click', imagineStop);
+      $('imagineClearBtn')?.addEventListener('click', imagineClear);
+    };
+
     const switchTab = (target) => {
-      ['tokens', 'statistics', 'keys', 'logs', 'cache', 'settings'].forEach(name => {
+      ['tokens', 'statistics', 'keys', 'logs', 'cache', 'settings', 'imagine', 'voice'].forEach(name => {
         const cap = name.charAt(0).toUpperCase() + name.slice(1);
         const active = name === target;
         const panel = $(`panel${cap}`);
@@ -1308,6 +1526,7 @@
       if (target === 'statistics') loadRequestStats();
       if (target === 'keys') loadKeys();
       if (target === 'logs') loadLogs();
+      if (target === 'imagine') bindImaginePanel();
     };
 
     // --- Key 管理 ---
