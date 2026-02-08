@@ -304,43 +304,51 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
     running = true;
     stop = false;
     send({ type: "status", status: "running", run_id: crypto.randomUUID() });
-    const settings = await getSettings(c.env);
-    let sequence = 0;
-    while (!stop) {
-      const chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
-      if (!chosen) {
-        send({ type: "error", message: "No available token", code: "NO_AVAILABLE_TOKEN" });
-        break;
-      }
-      const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
-      const cookie = cf
-        ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
-        : `sso-rw=${chosen.token};sso=${chosen.token}`;
-      const upstream = streamImagineWs({
-        cookie,
-        prompt,
-        aspect_ratio,
-        n: 1,
-        enable_nsfw: settings.grok.image_ws_nsfw !== false,
-        timeout: Math.max(10, Number(settings.grok.stream_idle_timeout ?? 120) || 120),
-        blocked_seconds: Math.max(5, Number(settings.grok.image_ws_blocked_seconds ?? 15) || 15),
-        final_min_bytes: Math.max(1, Number(settings.grok.image_ws_final_min_bytes ?? 100000) || 100000),
-        medium_min_bytes: Math.max(1, Number(settings.grok.image_ws_medium_min_bytes ?? 30000) || 30000),
-      });
-      for await (const item of upstream) {
-        if (stop) break;
-        if (item.type === "error") {
-          send({ type: "error", message: item.error, code: item.error_code });
-          continue;
+    try {
+      const settings = await getSettings(c.env);
+      let sequence = 0;
+      while (!stop) {
+        const chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
+        if (!chosen) {
+          send({ type: "error", message: "No available token", code: "NO_AVAILABLE_TOKEN" });
+          break;
         }
-        sequence += 1;
-        send({
-          type: "image",
-          b64_json: stripBase64Prefix(item.blob),
-          sequence,
-          elapsed_ms: 0,
+        const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
+        const cookie = cf
+          ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
+          : `sso-rw=${chosen.token};sso=${chosen.token}`;
+        const upstream = streamImagineWs({
+          cookie,
+          prompt,
+          aspect_ratio,
+          n: 1,
+          enable_nsfw: settings.grok.image_ws_nsfw !== false,
+          timeout: Math.max(10, Number(settings.grok.stream_idle_timeout ?? 120) || 120),
+          blocked_seconds: Math.max(5, Number(settings.grok.image_ws_blocked_seconds ?? 15) || 15),
+          final_min_bytes: Math.max(1, Number(settings.grok.image_ws_final_min_bytes ?? 100000) || 100000),
+          medium_min_bytes: Math.max(1, Number(settings.grok.image_ws_medium_min_bytes ?? 30000) || 30000),
         });
+        for await (const item of upstream) {
+          if (stop) break;
+          if (item.type === "error") {
+            send({ type: "error", message: item.error, code: item.error_code });
+            continue;
+          }
+          sequence += 1;
+          send({
+            type: "image",
+            b64_json: stripBase64Prefix(item.blob),
+            sequence,
+            elapsed_ms: 0,
+          });
+        }
       }
+    } catch (err) {
+      send({
+        type: "error",
+        message: err instanceof Error ? err.message : String(err),
+        code: "imagine_ws_upstream_error",
+      });
     }
     running = false;
     send({ type: "status", status: "stopped" });

@@ -53,29 +53,38 @@ function classifyImage(args: {
 }
 
 async function connectWs(cookie: string): Promise<WebSocket> {
-  const keyBytes = new Uint8Array(16);
-  crypto.getRandomValues(keyBytes);
-  let keyRaw = "";
-  for (const b of keyBytes) keyRaw += String.fromCharCode(b);
-  const secWebSocketKey = btoa(keyRaw);
-
-  const resp = await fetch(WS_URL, {
-    headers: {
+  const attempts: Array<Record<string, string>> = [
+    {
       Cookie: cookie,
       Origin: "https://grok.com",
       Upgrade: "websocket",
       Connection: "Upgrade",
-      "Sec-WebSocket-Key": secWebSocketKey,
-      "Sec-WebSocket-Version": "13",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
     },
-  });
-  const ws = (resp as any).webSocket as WebSocket | undefined;
-  if (!ws) {
+    // 回退到最小头，避免上游对部分头部严格校验时握手失败。
+    {
+      Cookie: cookie,
+      Origin: "https://grok.com",
+      Upgrade: "websocket",
+      Connection: "Upgrade",
+    },
+  ];
+
+  let lastError = "WebSocket not supported";
+  for (const headers of attempts) {
+    const resp = await fetch(WS_URL, { headers });
+    const ws = (resp as any).webSocket as WebSocket | undefined;
+    if (ws) {
+      ws.accept();
+      return ws;
+    }
     const body = await resp.text().catch(() => "");
-    throw new Error(`WebSocket upgrade failed: ${resp.status} ${body.slice(0, 120)}`);
+    lastError = `WebSocket upgrade failed: ${resp.status} ${body.slice(0, 120)}`;
   }
-  ws.accept();
-  return ws;
+
+  throw new Error(lastError);
 }
 
 function createMessageQueue(ws: WebSocket) {
