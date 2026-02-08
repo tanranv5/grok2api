@@ -53,14 +53,27 @@ function classifyImage(args: {
 }
 
 async function connectWs(cookie: string): Promise<WebSocket> {
+  const keyBytes = new Uint8Array(16);
+  crypto.getRandomValues(keyBytes);
+  let keyRaw = "";
+  for (const b of keyBytes) keyRaw += String.fromCharCode(b);
+  const secWebSocketKey = btoa(keyRaw);
+
   const resp = await fetch(WS_URL, {
     headers: {
       Cookie: cookie,
       Origin: "https://grok.com",
+      Upgrade: "websocket",
+      Connection: "Upgrade",
+      "Sec-WebSocket-Key": secWebSocketKey,
+      "Sec-WebSocket-Version": "13",
     },
   });
   const ws = (resp as any).webSocket as WebSocket | undefined;
-  if (!ws) throw new Error("WebSocket not supported");
+  if (!ws) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`WebSocket upgrade failed: ${resp.status} ${body.slice(0, 120)}`);
+  }
   ws.accept();
   return ws;
 }
