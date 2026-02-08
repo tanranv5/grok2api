@@ -1,4 +1,5 @@
-const WS_URL = "wss://grok.com/ws/imagine/listen";
+// Workers 侧使用 fetch 升级 WebSocket 时应走 https 端点。
+const WS_URL = "https://grok.com/ws/imagine/listen";
 
 export type ImageWsItem =
   | {
@@ -74,14 +75,18 @@ async function connectWs(cookie: string): Promise<WebSocket> {
 
   let lastError = "WebSocket not supported";
   for (const headers of attempts) {
-    const resp = await fetch(WS_URL, { headers });
-    const ws = (resp as any).webSocket as WebSocket | undefined;
-    if (ws) {
-      ws.accept();
-      return ws;
+    try {
+      const resp = await fetch(WS_URL, { method: "GET", headers });
+      const ws = (resp as any).webSocket as WebSocket | undefined;
+      if (ws) {
+        ws.accept();
+        return ws;
+      }
+      const body = await resp.text().catch(() => "");
+      lastError = `WebSocket upgrade failed: ${resp.status} ${body.slice(0, 120)}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
     }
-    const body = await resp.text().catch(() => "");
-    lastError = `WebSocket upgrade failed: ${resp.status} ${body.slice(0, 120)}`;
   }
 
   throw new Error(lastError);
