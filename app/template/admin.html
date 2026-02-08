@@ -1662,30 +1662,46 @@
         });
         if (!resp.ok) throw new Error(`获取 Voice Token 失败: ${resp.status}`);
         const data = await resp.json();
-        if (!data?.token || !data?.url) throw new Error('Voice Token 返回无效');
+        if (!data?.token) throw new Error('Voice Token 返回无效');
 
-        const room = new lk.Room({ adaptiveStream: true, dynacast: true });
-        voiceRoom = room;
-        room.on(lk.RoomEvent.TrackSubscribed, (track) => {
-          if (track?.kind === (lk.Track?.Kind?.Audio || 'audio')) {
-            const el = track.attach();
-            const audioRoot = $('voiceAudioRootInTab');
-            if (audioRoot) audioRoot.appendChild(el);
-          }
-        });
-        room.on(lk.RoomEvent.Disconnected, () => {
-          voiceLog('连接已断开', 'warn');
-          voiceResetUi();
-        });
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const localProxyUrl = `${protocol}://${window.location.host}/api/v1/admin/voice/signal/${encodeURIComponent(token)}`;
+        const signalUrl = String(data.url || localProxyUrl);
+        const directUrl = String(data.direct_url || data.url || '');
 
-        voiceLog(`信令地址: ${data.url}`);
-        await room.connect(data.url, data.token);
+        const connectRoom = async (url) => {
+          const room = new lk.Room({ adaptiveStream: true, dynacast: true });
+          room.on(lk.RoomEvent.TrackSubscribed, (track) => {
+            if (track?.kind === (lk.Track?.Kind?.Audio || 'audio')) {
+              const el = track.attach();
+              const audioRoot = $('voiceAudioRootInTab');
+              if (audioRoot) audioRoot.appendChild(el);
+            }
+          });
+          room.on(lk.RoomEvent.Disconnected, () => {
+            voiceLog('连接已断开', 'warn');
+            voiceResetUi();
+          });
+          voiceLog(`信令地址: ${url}`);
+          await room.connect(url, data.token);
+          return room;
+        };
+
+        try {
+          voiceRoom = await connectRoom(signalUrl);
+        } catch (firstErr) {
+          const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+          voiceLog(`代理信令失败: ${firstMsg}`, 'warn');
+          if (!directUrl || directUrl === signalUrl) throw firstErr;
+          voiceRoom = await connectRoom(directUrl);
+        }
+
         voiceLog('已连接 LiveKit');
         voiceSetStatus('通话中');
         voiceSetButtons(true);
 
         const tracks = await lk.createLocalTracks({ audio: true, video: false });
-        for (const t of tracks) await room.localParticipant.publishTrack(t);
+        for (const t of tracks) await voiceRoom.localParticipant.publishTrack(t);
         voiceLog('麦克风已发布', 'info');
         showToast('Voice 连接成功', 'success');
       } catch (err) {

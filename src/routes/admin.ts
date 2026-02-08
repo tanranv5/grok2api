@@ -233,15 +233,19 @@ async function handleVoiceSignalProxy(c: any): Promise<Response> {
   const upstreamPath = suffix && suffix !== "/" ? suffix : "/rtc";
   const upstreamUrl = new URL(`https://livekit.grok.com${upstreamPath}`);
   upstreamUrl.search = reqUrl.search;
+  const clientSubprotocol = c.req.header("Sec-WebSocket-Protocol");
+
+  const upstreamHeaders: Record<string, string> = {
+    Upgrade: "websocket",
+    Connection: "Upgrade",
+    Origin: "https://grok.com",
+    "User-Agent": c.req.header("User-Agent") || "Mozilla/5.0",
+  };
+  if (clientSubprotocol) upstreamHeaders["Sec-WebSocket-Protocol"] = clientSubprotocol;
 
   const upstreamResp = await fetch(upstreamUrl.toString(), {
     method: "GET",
-    headers: {
-      Upgrade: "websocket",
-      Connection: "Upgrade",
-      Origin: "https://grok.com",
-      "User-Agent": c.req.header("User-Agent") || "Mozilla/5.0",
-    },
+    headers: upstreamHeaders,
   });
   const upstreamWs = (upstreamResp as any).webSocket as WebSocket | undefined;
   if (!upstreamWs) {
