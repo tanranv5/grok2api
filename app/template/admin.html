@@ -1549,13 +1549,16 @@
           imagineSetError('连接异常');
           imagineSetStatus('连接异常');
         };
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           imagineSetActive();
           const hasOpen = imagineSockets.some(w => w && w.readyState === WebSocket.OPEN);
           if (!hasOpen) {
             imagineRunning = false;
             imagineSetButtons(false);
             imagineSetStatus('未连接');
+            if (imagineImageCount === 0 && event && event.code !== 1000) {
+              imagineSetError(`连接关闭 code=${event.code}${event.reason ? `, reason=${event.reason}` : ''}`);
+            }
           }
         };
         imagineSockets.push(ws);
