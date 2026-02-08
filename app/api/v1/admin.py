@@ -221,9 +221,18 @@ async def admin_voice_token(
                 status_code=502,
             )
 
+        livekit_url = (
+            data.get("url")
+            or data.get("livekitUrl")
+            or data.get("livekit_url")
+            or data.get("serverUrl")
+            or data.get("server_url")
+            or "wss://livekit.grok.com"
+        )
+
         return VoiceTokenResponse(
             token=token,
-            url="wss://livekit.grok.com",
+            url=livekit_url,
             participant_name="",
             room_name="",
         )

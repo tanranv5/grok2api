@@ -1678,6 +1678,7 @@
           voiceResetUi();
         });
 
+        voiceLog(`信令地址: ${data.url}`);
         await room.connect(data.url, data.token);
         voiceLog('已连接 LiveKit');
         voiceSetStatus('通话中');

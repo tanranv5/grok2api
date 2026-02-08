@@ -182,9 +182,23 @@ adminRoutes.get("/api/v1/admin/voice/token", requireAdminAuth, async (c) => {
       const txt = await resp.text().catch(() => "");
       return c.json({ error: `Upstream error ${resp.status}`, detail: txt.slice(0, 200) }, 502);
     }
-    const data = (await resp.json()) as { token?: string };
+    const data = (await resp.json()) as {
+      token?: string;
+      url?: string;
+      livekitUrl?: string;
+      livekit_url?: string;
+      serverUrl?: string;
+      server_url?: string;
+    };
     if (!data?.token) return c.json({ error: "Missing voice token" }, 502);
-    return c.json({ token: data.token, url: "wss://livekit.grok.com", participant_name: "", room_name: "" });
+    const livekitUrl =
+      data.url ||
+      data.livekitUrl ||
+      data.livekit_url ||
+      data.serverUrl ||
+      data.server_url ||
+      "wss://livekit.grok.com";
+    return c.json({ token: data.token, url: livekitUrl, participant_name: "", room_name: "" });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e), code: "voice_error" }, 500);
   }
