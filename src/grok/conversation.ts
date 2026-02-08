@@ -15,7 +15,7 @@ export interface OpenAIChatRequestBody {
   video_config?: {
     aspect_ratio?: string;
     video_length?: number;
-    resolution?: string;
+    resolution_name?: string;
     preset?: string;
   };
 }
@@ -78,7 +78,7 @@ export function buildConversationPayload(args: {
   videoConfig?: {
     aspect_ratio?: string;
     video_length?: number;
-    resolution?: string;
+    resolution_name?: string;
     preset?: string;
   };
   settings: GrokSettings;
@@ -93,8 +93,10 @@ export function buildConversationPayload(args: {
 
     const aspectRatio = (args.videoConfig?.aspect_ratio ?? "").trim() || "3:2";
     const videoLengthRaw = Number(args.videoConfig?.video_length ?? 6);
-    const videoLength = Number.isFinite(videoLengthRaw) ? Math.max(1, Math.floor(videoLengthRaw)) : 6;
-    const resolution = (args.videoConfig?.resolution ?? "SD") === "HD" ? "HD" : "SD";
+    const allowedLength = new Set([6, 10, 15]);
+    const videoLength = allowedLength.has(videoLengthRaw) ? videoLengthRaw : 6;
+    const resolutionName = (args.videoConfig?.resolution_name ?? "480p").trim() || "480p";
+    const resolution = resolutionName === "720p" ? "720p" : "480p";
     const preset = (args.videoConfig?.preset ?? "normal").trim();
 
     let modeFlag = "--mode=custom";
@@ -120,7 +122,7 @@ export function buildConversationPayload(args: {
                 parentPostId: postId,
                 aspectRatio,
                 videoLength,
-                videoResolution: resolution,
+                resolutionName: resolution,
               },
             },
           },

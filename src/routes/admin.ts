@@ -13,7 +13,7 @@ import {
   updateApiKeyStatus,
 } from "../repo/apiKeys";
 import { displayKey } from "../utils/crypto";
-import { createAdminSession, deleteAdminSession } from "../repo/adminSessions";
+import { createAdminSession, deleteAdminSession, verifyAdminSession } from "../repo/adminSessions";
 import {
   addTokens,
   countTokens,
@@ -26,6 +26,7 @@ import {
   updateTokenNote,
   updateTokenTags,
   updateTokenLimits,
+  selectBestToken,
 } from "../repo/tokens";
 import { checkRateLimits } from "../grok/rateLimits";
 import { addRequestLog, clearRequestLogs, getRequestLogs, getRequestStats } from "../repo/logs";
@@ -37,6 +38,8 @@ import {
   listOldestRows,
   type CacheType,
 } from "../repo/cache";
+import { streamImagineWs } from "../grok/image_ws";
+import { getDynamicHeaders } from "../grok/headers";
 
 function jsonError(message: string, code: string): Record<string, unknown> {
   return { error: message, code };
@@ -58,6 +61,19 @@ function formatBytes(sizeBytes: number): string {
   const mb = 1024 * 1024;
   if (sizeBytes < mb) return `${(sizeBytes / kb).toFixed(1)} KB`;
   return `${(sizeBytes / mb).toFixed(1)} MB`;
+}
+
+function adminSse(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function stripBase64Prefix(input: string): string {
+  if (!input) return "";
+  const idx = input.indexOf(",");
+  if (idx === -1) return input;
+  const head = input.slice(0, idx);
+  if (head.toLowerCase().includes("base64")) return input.slice(idx + 1);
+  return input;
 }
 
 async function clearKvCacheByType(
@@ -83,6 +99,7 @@ export const adminRoutes = new Hono<{ Bindings: Env }>();
 const RATE_LIMIT_MODEL = "grok-3";
 const REFRESH_STALE_MS = 10 * 60 * 1000;
 const MAX_REFRESH_BATCH = 50;
+const LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens";
 
 adminRoutes.post("/api/login", async (c) => {
   try {
@@ -131,6 +148,210 @@ adminRoutes.post("/api/settings", requireAdminAuth, async (c) => {
 
 adminRoutes.get("/api/storage/mode", requireAdminAuth, async (c) => {
   return c.json({ success: true, data: { mode: "D1" } });
+});
+
+adminRoutes.get("/api/v1/admin/voice/token", requireAdminAuth, async (c) => {
+  try {
+    const voice = String(c.req.query("voice") ?? "ara");
+    const personality = String(c.req.query("personality") ?? "assistant");
+    const speedRaw = Number(c.req.query("speed") ?? "1.0");
+    const speed = Number.isFinite(speedRaw) ? Math.min(2, Math.max(0.5, speedRaw)) : 1.0;
+    const settings = await getSettings(c.env);
+    const chosen = await selectBestToken(c.env.DB, "grok-4.1-fast");
+    if (!chosen) return c.json({ error: "No available token", code: "NO_AVAILABLE_TOKEN" }, 503);
+
+    const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
+    const cookie = cf ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}` : `sso-rw=${chosen.token};sso=${chosen.token}`;
+    const headers = getDynamicHeaders(settings.grok, "/rest/livekit/tokens");
+    headers.Cookie = cookie;
+    headers.Referer = "https://grok.com/";
+    const payload = {
+      sessionPayload: JSON.stringify({
+        voice,
+        personality,
+        playback_speed: speed,
+        enable_vision: false,
+        turn_detection: { type: "server_vad" },
+      }),
+      requestAgentDispatch: false,
+      livekitUrl: "wss://livekit.grok.com",
+      params: { enable_markdown_transcript: "true" },
+    };
+    const resp = await fetch(LIVEKIT_TOKEN_API, { method: "POST", headers, body: JSON.stringify(payload) });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      return c.json({ error: `Upstream error ${resp.status}`, detail: txt.slice(0, 200) }, 502);
+    }
+    const data = (await resp.json()) as { token?: string };
+    if (!data?.token) return c.json({ error: "Missing voice token" }, 502);
+    return c.json({ token: data.token, url: "wss://livekit.grok.com", participant_name: "", room_name: "" });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e), code: "voice_error" }, 500);
+  }
+});
+
+adminRoutes.post("/api/v1/admin/imagine/stream", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as { prompt?: string; aspect_ratio?: string };
+    const prompt = String(body.prompt ?? "").trim();
+    const aspect_ratio = String(body.aspect_ratio ?? "2:3");
+    if (!prompt) return c.json({ error: "Missing prompt", code: "missing_prompt" }, 400);
+
+    const settings = await getSettings(c.env);
+    const chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
+    if (!chosen) return c.json({ error: "No available token", code: "NO_AVAILABLE_TOKEN" }, 503);
+    const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
+    const cookie = cf ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}` : `sso-rw=${chosen.token};sso=${chosen.token}`;
+    const upstream = streamImagineWs({
+      cookie,
+      prompt,
+      aspect_ratio,
+      n: 1,
+      enable_nsfw: settings.grok.image_ws_nsfw !== false,
+      timeout: Math.max(10, Number(settings.grok.stream_idle_timeout ?? 120) || 120),
+      blocked_seconds: Math.max(5, Number(settings.grok.image_ws_blocked_seconds ?? 15) || 15),
+      final_min_bytes: Math.max(1, Number(settings.grok.image_ws_final_min_bytes ?? 100000) || 100000),
+      medium_min_bytes: Math.max(1, Number(settings.grok.image_ws_medium_min_bytes ?? 30000) || 30000),
+    });
+
+    const encoder = new TextEncoder();
+    let sequence = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(adminSse("status", { type: "status", status: "running" })));
+        try {
+          for await (const item of upstream) {
+            if (item.type === "error") {
+              controller.enqueue(
+                encoder.encode(adminSse("error", { type: "error", message: item.error, code: item.error_code })),
+              );
+              continue;
+            }
+            sequence += 1;
+            controller.enqueue(
+              encoder.encode(
+                adminSse("image", {
+                  type: "image",
+                  b64_json: stripBase64Prefix(item.blob),
+                  sequence,
+                  elapsed_ms: 0,
+                }),
+              ),
+            );
+          }
+          controller.enqueue(encoder.encode(adminSse("status", { type: "status", status: "stopped" })));
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e), code: "imagine_stream_error" }, 500);
+  }
+});
+
+adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
+  const q = c.req.query("api_key") ?? "";
+  const ok = q ? await verifyAdminSession(c.env.DB, q) : false;
+  if (!ok) return c.text("Unauthorized", 401);
+
+  if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") return c.text("Expected websocket", 426);
+
+  const pair = new WebSocketPair();
+  const client = pair[0];
+  const server = pair[1];
+  server.accept();
+
+  let running = false;
+  let stop = false;
+  const send = (data: unknown) => {
+    try {
+      server.send(JSON.stringify(data));
+    } catch {
+      // ignore
+    }
+  };
+
+  server.addEventListener("message", async (evt) => {
+    let payload: any = null;
+    try {
+      payload = JSON.parse(String(evt.data || "{}"));
+    } catch {
+      payload = null;
+    }
+    if (!payload?.type) return;
+    if (payload.type === "stop") {
+      stop = true;
+      running = false;
+      send({ type: "status", status: "stopped" });
+      return;
+    }
+    if (payload.type !== "start" || running) return;
+    const prompt = String(payload.prompt ?? "").trim();
+    const aspect_ratio = String(payload.aspect_ratio ?? "2:3");
+    if (!prompt) {
+      send({ type: "error", message: "Missing prompt", code: "missing_prompt" });
+      return;
+    }
+    running = true;
+    stop = false;
+    send({ type: "status", status: "running", run_id: crypto.randomUUID() });
+    const settings = await getSettings(c.env);
+    let sequence = 0;
+    while (!stop) {
+      const chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
+      if (!chosen) {
+        send({ type: "error", message: "No available token", code: "NO_AVAILABLE_TOKEN" });
+        break;
+      }
+      const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
+      const cookie = cf
+        ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
+        : `sso-rw=${chosen.token};sso=${chosen.token}`;
+      const upstream = streamImagineWs({
+        cookie,
+        prompt,
+        aspect_ratio,
+        n: 1,
+        enable_nsfw: settings.grok.image_ws_nsfw !== false,
+        timeout: Math.max(10, Number(settings.grok.stream_idle_timeout ?? 120) || 120),
+        blocked_seconds: Math.max(5, Number(settings.grok.image_ws_blocked_seconds ?? 15) || 15),
+        final_min_bytes: Math.max(1, Number(settings.grok.image_ws_final_min_bytes ?? 100000) || 100000),
+        medium_min_bytes: Math.max(1, Number(settings.grok.image_ws_medium_min_bytes ?? 30000) || 30000),
+      });
+      for await (const item of upstream) {
+        if (stop) break;
+        if (item.type === "error") {
+          send({ type: "error", message: item.error, code: item.error_code });
+          continue;
+        }
+        sequence += 1;
+        send({
+          type: "image",
+          b64_json: stripBase64Prefix(item.blob),
+          sequence,
+          elapsed_ms: 0,
+        });
+      }
+    }
+    running = false;
+    send({ type: "status", status: "stopped" });
+  });
+
+  server.addEventListener("close", () => {
+    stop = true;
+    running = false;
+  });
+
+  return new Response(null, { status: 101, webSocket: client });
 });
 
 adminRoutes.get("/api/tokens", requireAdminAuth, async (c) => {

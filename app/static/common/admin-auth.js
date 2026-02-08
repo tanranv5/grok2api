@@ -141,14 +141,14 @@ async function requestApiKey(appKey) {
 async function ensureApiKey() {
   const appKey = await getStoredAppKey();
   if (!appKey) {
-    window.location.href = '/admin-legacy';
+    window.location.href = '/admin';
     return null;
   }
   try {
     return await requestApiKey(appKey);
   } catch (e) {
     clearStoredAppKey();
-    window.location.href = '/admin-legacy';
+    window.location.href = '/admin';
     return null;
   }
 }
@@ -159,7 +159,7 @@ function buildAuthHeaders(apiKey) {
 
 function logout() {
   clearStoredAppKey();
-  window.location.href = '/admin-legacy';
+  window.location.href = '/admin';
 }
 
 async function fetchStorageType() {

@@ -67,6 +67,14 @@ app.get("/manage", async (c) => {
   return fetchAsset(c, "/admin.html");
 });
 
+app.get("/imagine", async (c) => {
+  return fetchAsset(c, "/imagine/imagine.html");
+});
+
+app.get("/voice", async (c) => {
+  return fetchAsset(c, "/voice/voice.html");
+});
+
 app.get("/static/*", async (c) => {
   const url = new URL(c.req.url);
   if (url.pathname === "/static/_worker.js") return c.notFound();

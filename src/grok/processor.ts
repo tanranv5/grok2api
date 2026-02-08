@@ -164,6 +164,7 @@ export function createOpenAiStreamFromGrokNdjson(
     settings: GrokSettings;
     global: GlobalSettings;
     origin: string;
+    isVideoModel?: boolean;
     onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
   },
 ): ReadableStream<Uint8Array> {
@@ -181,8 +182,12 @@ export function createOpenAiStreamFromGrokNdjson(
   const showThinking = settings.show_thinking !== false;
   const stripRenderStream = createRenderTagStripper();
 
-  const firstTimeoutMs = Math.max(0, (settings.stream_first_response_timeout ?? 30) * 1000);
-  const chunkTimeoutMs = Math.max(0, (settings.stream_chunk_timeout ?? 120) * 1000);
+  const idleTimeout = typeof settings.stream_idle_timeout === "number" ? settings.stream_idle_timeout : null;
+  const videoIdle = typeof settings.video_idle_timeout === "number" ? settings.video_idle_timeout : null;
+  const streamIdleMs = Math.max(0, (idleTimeout ?? settings.stream_chunk_timeout ?? 120) * 1000);
+  const videoIdleMs = Math.max(0, (videoIdle ?? idleTimeout ?? settings.stream_chunk_timeout ?? 120) * 1000);
+  const firstTimeoutMs = Math.max(0, (settings.stream_first_response_timeout ?? idleTimeout ?? 30) * 1000);
+  const chunkTimeoutMs = opts.isVideoModel ? videoIdleMs : streamIdleMs;
   const totalTimeoutMs = Math.max(0, (settings.stream_total_timeout ?? 600) * 1000);
 
   return new ReadableStream<Uint8Array>({

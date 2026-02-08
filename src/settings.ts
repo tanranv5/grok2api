@@ -28,12 +28,20 @@ export interface GrokSettings {
   stream_first_response_timeout?: number;
   stream_chunk_timeout?: number;
   stream_total_timeout?: number;
+  stream_idle_timeout?: number;
+  video_idle_timeout?: number;
+  retry_budget?: number;
   max_retry?: number;
   retry_status_codes?: number[];
   retry_on_network_error?: boolean;
   retry_backoff_base?: number;
   retry_backoff_factor?: number;
   retry_backoff_max?: number;
+  image_ws?: boolean;
+  image_ws_nsfw?: boolean;
+  image_ws_blocked_seconds?: number;
+  image_ws_final_min_bytes?: number;
+  image_ws_medium_min_bytes?: number;
 }
 
 export interface SettingsBundle {
@@ -67,12 +75,20 @@ const DEFAULTS: SettingsBundle = {
     stream_first_response_timeout: 30,
     stream_chunk_timeout: 120,
     stream_total_timeout: 600,
+    stream_idle_timeout: 120,
+    video_idle_timeout: 90,
+    retry_budget: 90,
     max_retry: 3,
     retry_status_codes: [401, 429],
     retry_on_network_error: true,
     retry_backoff_base: 1,
     retry_backoff_factor: 2,
     retry_backoff_max: 30,
+    image_ws: true,
+    image_ws_nsfw: true,
+    image_ws_blocked_seconds: 15,
+    image_ws_final_min_bytes: 100000,
+    image_ws_medium_min_bytes: 30000,
   },
 };
 

@@ -286,6 +286,8 @@
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1">缓存预览</button>
         <button onclick="switchTab('settings')" id="tabSettings"
           class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1">Setting 配置</button>
+        <button onclick="switchTab('play')" id="tabPlay"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1">功能玩法</button>
       </nav>
     </div>
 
@@ -1024,6 +1026,76 @@
       </div>
     </div>
 
+    <div id="panelPlay" class="hidden">
+      <div class="grid gap-4 md:grid-cols-2 mb-4">
+        <div class="rounded-lg border border-border bg-background p-5">
+          <h3 class="text-base font-semibold mb-2">功能玩法页面</h3>
+          <p class="text-sm text-muted-foreground mb-4">已同步 Chenyme 的两个玩法页面入口。</p>
+          <div class="space-y-2 text-sm">
+            <a href="/imagine" target="_blank"
+              class="flex items-center justify-between rounded-md border border-border px-3 py-2 hover:bg-muted/40 transition-colors">
+              <span>Imagine 瀑布流</span>
+              <span class="text-muted-foreground">打开</span>
+            </a>
+            <a href="/voice" target="_blank"
+              class="flex items-center justify-between rounded-md border border-border px-3 py-2 hover:bg-muted/40 transition-colors">
+              <span>Voice Live 陪聊</span>
+              <span class="text-muted-foreground">打开</span>
+            </a>
+          </div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-5">
+          <h3 class="text-base font-semibold mb-2">玩法接口检查</h3>
+          <p class="text-sm text-muted-foreground mb-4">对应后端接口（FastAPI）如下：</p>
+          <div class="space-y-2 text-sm">
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span>/api/v1/admin/imagine/ws</span>
+              <span class="text-green-600">已实现</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span>/api/v1/admin/voice/token</span>
+              <span class="text-green-600">已实现</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span>/api/v1/admin/login</span>
+              <span class="text-green-600">已实现</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="rounded-lg border border-border bg-background p-5">
+          <h3 class="text-base font-semibold mb-2">常用接口</h3>
+          <p class="text-sm text-muted-foreground mb-4">以下为常用的 OpenAI 兼容接口。</p>
+          <div class="space-y-2 text-sm">
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span>/v1/chat/completions</span>
+              <span class="text-muted-foreground">对话</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span>/v1/images/generations</span>
+              <span class="text-muted-foreground">文生图</span>
+            </div>
+            <div class="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <span>/v1/images/edits</span>
+              <span class="text-muted-foreground">图生图/编辑</span>
+            </div>
+          </div>
+        </div>
+        <div class="rounded-lg border border-border bg-background p-5">
+          <h3 class="text-base font-semibold mb-2">快速提示</h3>
+          <p class="text-sm text-muted-foreground mb-4">模型别名会自动映射到上游，无需手动转换。</p>
+          <div class="bg-muted/50 border border-border rounded-md p-3 text-xs font-mono whitespace-pre-wrap">
+curl http://localhost:8000/v1/images/generations \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $GROK2API_API_KEY" \\
+  -d '{"model":"grok-imagine-1.0","prompt":"一只在太空漂浮的猫","n":1}'
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 统计面板 -->
     <div id="panelStatistics" class="hidden">
       <!-- 概览卡片 -->
@@ -1284,7 +1356,7 @@
     const logout = () => { localStorage.removeItem('adminToken'); window.location.href = '/login' };
 
     const switchTab = (target) => {
-      ['tokens', 'statistics', 'keys', 'logs', 'cache', 'settings'].forEach(name => {
+      ['tokens', 'statistics', 'keys', 'logs', 'cache', 'settings', 'play'].forEach(name => {
         const cap = name.charAt(0).toUpperCase() + name.slice(1);
         const active = name === target;
         const panel = $(`panel${cap}`);
