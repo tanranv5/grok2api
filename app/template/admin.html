@@ -273,30 +273,24 @@
   <main class="mx-auto max-w-7xl px-6 py-6">
     <!-- Tab 导航 -->
     <div class="border-b border-border mb-6">
-      <div class="flex items-center justify-between gap-4">
-        <nav class="flex space-x-8 overflow-x-auto">
-          <button onclick="switchTab('tokens')" id="tabTokens"
-            class="tab-btn border-b-2 border-primary text-sm font-medium py-3 px-1 whitespace-nowrap">Token 管理</button>
-          <button onclick="switchTab('statistics')" id="tabStatistics"
-            class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">请求统计</button>
-          <button onclick="switchTab('keys')" id="tabKeys"
-            class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Key 管理</button>
-          <button onclick="switchTab('logs')" id="tabLogs"
-            class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">日志审计</button>
-          <button onclick="switchTab('cache')" id="tabCache"
-            class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">缓存预览</button>
-          <button onclick="switchTab('settings')" id="tabSettings"
-            class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Setting 配置</button>
-          <button onclick="switchTab('play')" id="tabPlay"
-            class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">功能玩法</button>
-        </nav>
-        <div id="playTopSwitcher" class="hidden items-center rounded-md border border-border p-1 bg-muted/40 mb-1">
-          <button id="playTopImagine" onclick="openPlayPaneTab('imagine')"
-            class="rounded px-3 py-1.5 text-sm transition-colors bg-background text-foreground shadow-sm whitespace-nowrap">Imagine 瀑布流</button>
-          <button id="playTopVoice" onclick="openPlayPaneTab('voice')"
-            class="rounded px-3 py-1.5 text-sm transition-colors text-muted-foreground hover:text-foreground whitespace-nowrap">Voice Live 陪聊</button>
-        </div>
-      </div>
+      <nav class="flex space-x-8 overflow-x-auto">
+        <button onclick="switchTab('tokens')" id="tabTokens"
+          class="tab-btn border-b-2 border-primary text-sm font-medium py-3 px-1 whitespace-nowrap">Token 管理</button>
+        <button onclick="switchTab('statistics')" id="tabStatistics"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">请求统计</button>
+        <button onclick="switchTab('keys')" id="tabKeys"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Key 管理</button>
+        <button onclick="switchTab('logs')" id="tabLogs"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">日志审计</button>
+        <button onclick="switchTab('cache')" id="tabCache"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">缓存预览</button>
+        <button onclick="switchTab('settings')" id="tabSettings"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Setting 配置</button>
+        <button onclick="window.location.href='/imagine'" id="tabImagine"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Imagine 瀑布流</button>
+        <button onclick="window.location.href='/voice'" id="tabVoice"
+          class="tab-btn border-b-2 border-transparent text-sm font-medium py-3 px-1 whitespace-nowrap">Voice Live 陪聊</button>
+      </nav>
     </div>
 
     <!-- Token 管理面板 -->
@@ -1034,18 +1028,6 @@
       </div>
     </div>
 
-    <div id="panelPlay" class="hidden">
-      <div class="rounded-lg border border-border bg-background p-5">
-        <div>
-          <h3 class="text-base font-semibold">功能玩法</h3>
-          <p class="text-sm text-muted-foreground mt-1">保留 Imagine 瀑布流 与 Voice Live，直接在当前标签页使用。</p>
-        </div>
-        <div class="mt-4 rounded-lg border border-border overflow-hidden bg-muted/20">
-          <iframe id="playFrame" title="功能玩法" src="" loading="lazy" class="w-full h-[860px] bg-white"></iframe>
-        </div>
-      </div>
-    </div>
-
     <!-- 统计面板 -->
     <div id="panelStatistics" class="hidden">
       <!-- 概览卡片 -->
@@ -1276,8 +1258,6 @@
     let refreshAllCursor = 0, refreshAllTotal = 0, refreshAllBatch = 50, refreshAllActive = false;
     let refreshSelectedCursor = 0, refreshSelectedTotal = 0, refreshSelectedBatch = 50, refreshSelectedActive = false;
     let refreshSelectedTokensList = [];
-    let playPane = 'imagine';
-    let playPaneInitialized = false;
     let allLogsData = [], currentLogPage = 1, logsPerPage = 20;
     const selectedKeys = new Set();
     const $ = (id) => document.getElementById(id);
@@ -1307,57 +1287,8 @@
 
     const logout = () => { localStorage.removeItem('adminToken'); window.location.href = '/login' };
 
-    const getPlayPageUrl = (target) => {
-      const path = window.location.pathname || '/';
-      const isFastApi = path.startsWith('/admin');
-      if (target === 'voice') return isFastApi ? '/admin/voice' : '/voice';
-      return isFastApi ? '/admin/imagine' : '/imagine';
-    };
-
-    const setPlayBtnState = (btn, active) => {
-      if (!btn) return;
-      btn.classList.toggle('bg-background', active);
-      btn.classList.toggle('text-foreground', active);
-      btn.classList.toggle('shadow-sm', active);
-      btn.classList.toggle('text-muted-foreground', !active);
-    };
-
-    const updatePlayTopSwitcher = (visible) => {
-      const sw = $('playTopSwitcher');
-      if (!sw) return;
-      sw.classList.toggle('hidden', !visible);
-      sw.classList.toggle('inline-flex', visible);
-    };
-
-    const switchPlayPane = (target = 'imagine') => {
-      playPane = target === 'voice' ? 'voice' : 'imagine';
-
-      const imagineBtn = $('playTopImagine');
-      const voiceBtn = $('playTopVoice');
-      const frame = $('playFrame');
-
-      setPlayBtnState(imagineBtn, playPane === 'imagine');
-      setPlayBtnState(voiceBtn, playPane === 'voice');
-
-      if (frame) {
-        const nextSrc = getPlayPageUrl(playPane);
-        if (frame.getAttribute('src') !== nextSrc) frame.setAttribute('src', nextSrc);
-      }
-    };
-
-    const openPlayPaneTab = (target) => {
-      switchTab('play');
-      switchPlayPane(target);
-    };
-
-    const initPlayPane = () => {
-      if (playPaneInitialized) return;
-      playPaneInitialized = true;
-      switchPlayPane('imagine');
-    };
-
     const switchTab = (target) => {
-      ['tokens', 'statistics', 'keys', 'logs', 'cache', 'settings', 'play'].forEach(name => {
+      ['tokens', 'statistics', 'keys', 'logs', 'cache', 'settings'].forEach(name => {
         const cap = name.charAt(0).toUpperCase() + name.slice(1);
         const active = name === target;
         const panel = $(`panel${cap}`);
@@ -1377,12 +1308,6 @@
       if (target === 'statistics') loadRequestStats();
       if (target === 'keys') loadKeys();
       if (target === 'logs') loadLogs();
-      if (target === 'play') {
-        initPlayPane();
-        updatePlayTopSwitcher(true);
-      } else {
-        updatePlayTopSwitcher(false);
-      }
     };
 
     // --- Key 管理 ---
