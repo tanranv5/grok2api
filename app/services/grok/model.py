@@ -166,6 +166,18 @@ class ModelService:
             "is_video": False,
         },
         {
+            "id": "grok-4.20-beta",
+            "grok_model": "grok-420",
+            "model_mode": "MODEL_MODE_GROK_420",
+            "rate_limit_model": "grok-420",
+            "display_name": "Grok 4.20 Beta",
+            "description": "Grok 4.20 beta model",
+            "tier": "basic",
+            "cost": "low",
+            "is_image": False,
+            "is_video": False,
+        },
+        {
             "id": "grok-imagine-1.0",
             "grok_model": "grok-3",
             "model_mode": "MODEL_MODE_FAST",

@@ -2,7 +2,8 @@
   "aliases": {
     "grok-imagine": "grok-imagine-1.0",
     "grok-4-1": "grok-4.1",
-    "grok-4-1-thinking-1129": "grok-4.1-thinking"
+    "grok-4-1-thinking-1129": "grok-4.1-thinking",
+    "grok-4-20-beta": "grok-4.20-beta"
   },
   "models": [
     {
@@ -189,6 +190,23 @@
       "default_top_p": 0.95,
       "tier": "basic",
       "cost": "high",
+      "is_image": false,
+      "is_video": false
+    },
+    {
+      "id": "grok-4.20-beta",
+      "grok_model": "grok-420",
+      "model_mode": "MODEL_MODE_GROK_420",
+      "rate_limit_model": "grok-420",
+      "display_name": "GROK-4.20-BETA",
+      "description": "Grok 4.20 beta model",
+      "raw_model_path": "xai/grok-420",
+      "default_temperature": 1.0,
+      "default_max_output_tokens": 8192,
+      "supported_max_output_tokens": 131072,
+      "default_top_p": 0.95,
+      "tier": "basic",
+      "cost": "low",
       "is_image": false,
       "is_video": false
     },
