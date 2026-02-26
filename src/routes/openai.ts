@@ -419,11 +419,17 @@ openAiRoutes.post("/chat/completions", async (c) => {
           }
         }
 
-        if (hasImages && !isVideoModel) {
-          const editModel = "grok-imagine-1.0-edit";
-          if (!MODEL_CONFIG[editModel]) return c.json(openAiError("Image edit model missing", "model_not_supported"), 400);
-          requestedModel = editModel;
-          cfg = MODEL_CONFIG[editModel]!;
+        const isExplicitEditModel = requestedModel === "grok-imagine-1.0-edit";
+        if (isExplicitEditModel) {
+          if (!hasImages) {
+            return c.json(
+              openAiError("Model 'grok-imagine-1.0-edit' requires at least one image input", "missing_image_input"),
+              400,
+            );
+          }
+          if (!cfg.is_image_model) {
+            return c.json(openAiError("Image edit model config invalid", "model_not_supported"), 400);
+          }
 
           const imageUrls = imgUris.filter(Boolean).map(normalizeAssetUrl);
           let parentPostId = "";
