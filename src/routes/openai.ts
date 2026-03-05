@@ -391,7 +391,6 @@ openAiRoutes.post("/chat/completions", async (c) => {
       const isVideoModel = Boolean(cfg.is_video_model);
       const imgInputs = isVideoModel && images.length > 1 ? images.slice(0, 1) : images;
       let normalizedContent = content;
-      const hasImages = imgInputs.length > 0;
       if (cfg.is_image_model) {
         const trimmed = normalizedContent.trim();
         if (trimmed && !trimmed.toLowerCase().startsWith("image generation:")) {
@@ -421,12 +420,6 @@ openAiRoutes.post("/chat/completions", async (c) => {
 
         const isExplicitEditModel = requestedModel === "grok-imagine-1.0-edit";
         if (isExplicitEditModel) {
-          if (!hasImages) {
-            return c.json(
-              openAiError("Model 'grok-imagine-1.0-edit' requires at least one image input", "missing_image_input"),
-              400,
-            );
-          }
           if (!cfg.is_image_model) {
             return c.json(openAiError("Image edit model config invalid", "model_not_supported"), 400);
           }
