@@ -1062,8 +1062,8 @@ openAiRoutes.post("/images/edits", async (c) => {
     return c.json(openAiError(`Model '${model}' not supported`, "model_not_supported"), 400);
   }
   const cfg = MODEL_CONFIG[model]!;
-  if (!cfg.is_image_model || model !== "grok-imagine-1.0-edit") {
-    return c.json(openAiError("Model must be grok-imagine-1.0-edit", "model_not_supported"), 400);
+  if (!cfg.is_image_model) {
+    return c.json(openAiError(`Model '${model}' is not an image model`, "model_not_supported"), 400);
   }
 
   const images = form.getAll("image").filter((v) => v instanceof File) as File[];

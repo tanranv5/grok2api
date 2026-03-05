@@ -181,9 +181,14 @@ def resolve_aspect_ratio(size: str) -> str:
 
 def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
     """验证图片编辑请求参数"""
-    if request.model != "grok-imagine-1.0-edit":
+    model_info = ModelService.get(request.model)
+    if not model_info or not model_info.is_image:
+        image_models = [m.model_id for m in ModelService.MODELS if m.is_image]
         raise ValidationException(
-            message=("The model `grok-imagine-1.0-edit` is required for image edits."),
+            message=(
+                f"The model `{request.model}` is not supported for image edits. "
+                f"Supported: {image_models}"
+            ),
             param="model",
             code="model_not_supported",
         )
