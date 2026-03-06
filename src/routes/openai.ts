@@ -1079,7 +1079,7 @@ openAiRoutes.post("/images/edits", async (c) => {
     return c.json(openAiError(`Model '${requestedModel}' is not an image model`, "model_not_supported"), 400);
   }
 
-  const images = form.getAll("image").filter((v) => v instanceof File) as File[];
+  const images = [...form.getAll("image"), ...form.getAll("image[]")].filter((v) => v instanceof File) as File[];
   if (!images.length) return c.json(openAiError("Missing 'image' file", "missing_image"), 400);
 
   const settingsBundle = await getSettings(c.env);
