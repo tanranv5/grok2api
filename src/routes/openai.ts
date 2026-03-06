@@ -249,11 +249,16 @@ function normalizeAssetUrl(raw: string): string {
 
 async function fetchBase64FromUrl(url: string): Promise<string> {
   const resp = await fetch(url, { redirect: "follow" });
-  if (!resp.ok) return "";
+  if (!resp.ok) {
+    throw new Error(`IMAGE_FETCH_FAILED: ${resp.status}`);
+  }
   const contentType = resp.headers.get("content-type")?.split(";")[0] || "image/jpeg";
   const buf = await resp.arrayBuffer();
   const b64 = arrayBufferToBase64(buf);
-  return contentType.startsWith("image/") ? b64 : "";
+  if (!contentType.startsWith("image/")) {
+    throw new Error(`IMAGE_FETCH_INVALID_CONTENT_TYPE: ${contentType}`);
+  }
+  return b64;
 }
 
 async function mapLimit<T, R>(
@@ -973,8 +978,10 @@ openAiRoutes.post("/images/generations", async (c) => {
             const encoded = encodeAssetPath(u);
             return { error: false, value: toImgProxyUrl(settingsBundle.global, origin, encoded) };
           }
-          const b64 = await fetchBase64FromUrl(u);
-          return { error: false, value: b64 || "error" };
+          const encoded = encodeAssetPath(u);
+          const proxied = toImgProxyUrl(settingsBundle.global, origin, encoded);
+          const b64 = await fetchBase64FromUrl(proxied);
+          return { error: false, value: b64 };
         });
 
         const data = items.map((d) => (responseFormat === "url" ? { url: d.value } : { b64_json: d.value }));
@@ -1187,8 +1194,10 @@ openAiRoutes.post("/images/edits", async (c) => {
           const encoded = encodeAssetPath(u);
           return { error: false, value: toImgProxyUrl(settingsBundle.global, origin, encoded) };
         }
-        const b64 = await fetchBase64FromUrl(u);
-        return { error: false, value: b64 || "error" };
+        const encoded = encodeAssetPath(u);
+        const proxied = toImgProxyUrl(settingsBundle.global, origin, encoded);
+        const b64 = await fetchBase64FromUrl(proxied);
+        return { error: false, value: b64 };
       });
 
       const items = data.map((d) => {
