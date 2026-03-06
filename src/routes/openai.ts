@@ -13,6 +13,7 @@ import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/toke
 import type { ApiAuthInfo } from "../auth";
 import { arrayBufferToBase64 } from "../utils/base64";
 import { streamImagineWs } from "../grok/image_ws";
+import { registerOpenAiVideoRoutes } from "./openai-videos";
 
 function openAiError(message: string, code: string): Record<string, unknown> {
   return { error: { message, type: "invalid_request_error", code } };
@@ -116,6 +117,14 @@ function normalizeImageResponseFormat(raw: unknown, fallback: "url" | "b64_json"
   if (!val) return fallback;
   if (val === "base64") return "b64_json";
   return val === "b64_json" ? "b64_json" : "url";
+}
+
+function resolveImageGenerationModel(requestedModel: string): string {
+  return requestedModel === "gpt-image-1" ? "grok-imagine-1.0" : requestedModel;
+}
+
+function resolveImageEditModel(requestedModel: string): string {
+  return requestedModel === "gpt-image-1" ? "grok-imagine-1.0-edit" : requestedModel;
 }
 
 function resolveAspectRatio(size: string | undefined): string {
@@ -277,6 +286,8 @@ openAiRoutes.use(
 );
 
 openAiRoutes.use("/*", requireApiAuth);
+
+registerOpenAiVideoRoutes(openAiRoutes);
 
 openAiRoutes.get("/models", async (c) => {
   const ts = Math.floor(Date.now() / 1000);
@@ -669,16 +680,17 @@ openAiRoutes.post("/images/generations", async (c) => {
 
     const prompt = String(body.prompt ?? "").trim();
     requestedModel = String(body.model ?? "grok-imagine-1.0");
+    const model = resolveImageGenerationModel(requestedModel);
     const n = Math.max(1, Number(body.n ?? 1) || 1);
     const stream = Boolean(body.stream);
 
     if (!prompt) return c.json(openAiError("Missing 'prompt'", "missing_prompt"), 400);
     if (n < 1 || n > 10) return c.json(openAiError("Invalid 'n'", "invalid_n"), 400);
-    if (!isValidModel(requestedModel))
+    if (!isValidModel(model))
       return c.json(openAiError(`Model '${requestedModel}' not supported`, "model_not_supported"), 400);
-    const cfg = MODEL_CONFIG[requestedModel]!;
-    if (!cfg.is_image_model || requestedModel !== "grok-imagine-1.0") {
-      return c.json(openAiError("Model must be grok-imagine-1.0", "model_not_supported"), 400);
+    const cfg = MODEL_CONFIG[model]!;
+    if (!cfg.is_image_model) {
+      return c.json(openAiError(`Model '${requestedModel}' is not an image model`, "model_not_supported"), 400);
     }
     const settingsBundle = await getSettings(c.env);
     const defaultFormat = settingsBundle.global.image_mode === "base64" ? "b64_json" : "url";
@@ -712,7 +724,7 @@ openAiRoutes.post("/images/generations", async (c) => {
         break;
       }
 
-      const chosen = await selectBestToken(c.env.DB, requestedModel);
+      const chosen = await selectBestToken(c.env.DB, model);
       if (!chosen) return c.json(openAiError("No available token", "NO_AVAILABLE_TOKEN"), 503);
       const jwt = chosen.token;
       const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
@@ -898,7 +910,7 @@ openAiRoutes.post("/images/generations", async (c) => {
           const duration = (Date.now() - start) / 1000;
           await addRequestLog(c.env.DB, {
             ip,
-            model: requestedModel,
+        model: requestedModel,
             duration: Number(duration.toFixed(2)),
             status: 200,
             key_name: keyName,
@@ -970,7 +982,7 @@ openAiRoutes.post("/images/generations", async (c) => {
         const duration = (Date.now() - start) / 1000;
         await addRequestLog(c.env.DB, {
           ip,
-          model: requestedModel,
+    model: requestedModel,
           duration: Number(duration.toFixed(2)),
           status: 200,
           key_name: keyName,
@@ -1043,7 +1055,8 @@ openAiRoutes.post("/images/edits", async (c) => {
 
   const form = await c.req.formData();
   const prompt = String(form.get("prompt") ?? "").trim();
-  const model = String(form.get("model") ?? "grok-imagine-1.0-edit").trim();
+  const requestedModel = String(form.get("model") ?? "grok-imagine-1.0-edit").trim();
+  const model = resolveImageEditModel(requestedModel);
   const nRaw = form.get("n");
   const n = nRaw == null ? 1 : Math.floor(Number(nRaw));
   const responseFormatRaw = form.get("response_format");
@@ -1059,11 +1072,11 @@ openAiRoutes.post("/images/edits", async (c) => {
   }
 
   if (!isValidModel(model)) {
-    return c.json(openAiError(`Model '${model}' not supported`, "model_not_supported"), 400);
+    return c.json(openAiError(`Model '${requestedModel}' not supported`, "model_not_supported"), 400);
   }
   const cfg = MODEL_CONFIG[model]!;
   if (!cfg.is_image_model) {
-    return c.json(openAiError(`Model '${model}' is not an image model`, "model_not_supported"), 400);
+    return c.json(openAiError(`Model '${requestedModel}' is not an image model`, "model_not_supported"), 400);
   }
 
   const images = form.getAll("image").filter((v) => v instanceof File) as File[];
@@ -1186,7 +1199,7 @@ openAiRoutes.post("/images/edits", async (c) => {
       const duration = (Date.now() - start) / 1000;
       await addRequestLog(c.env.DB, {
         ip,
-        model,
+        model: requestedModel,
         duration: Number(duration.toFixed(2)),
         status: 200,
         key_name: keyName,
@@ -1222,7 +1235,7 @@ openAiRoutes.post("/images/edits", async (c) => {
   const duration = (Date.now() - start) / 1000;
   await addRequestLog(c.env.DB, {
     ip,
-    model,
+    model: requestedModel,
     duration: Number(duration.toFixed(2)),
     status: 500,
     key_name: keyName,

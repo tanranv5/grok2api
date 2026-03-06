@@ -1,9 +1,11 @@
 {
   "aliases": {
     "grok-imagine": "grok-imagine-1.0",
+    "gpt-image-1": "grok-imagine-1.0",
     "grok-4-1": "grok-4.1",
     "grok-4-1-thinking-1129": "grok-4.1-thinking",
-    "grok-4-20-beta": "grok-4.20-beta"
+    "grok-4-20-beta": "grok-4.20-beta",
+    "sora-2": "grok-imagine-1.0-video"
   },
   "models": [
     {
