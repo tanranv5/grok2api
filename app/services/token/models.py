@@ -10,7 +10,7 @@ Token 数据模型
 
 from enum import Enum
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
 
@@ -71,6 +71,40 @@ class TokenInfo(BaseModel):
     note: str = ""
     last_asset_clear_at: Optional[int] = None
 
+    @field_validator("token", mode="before")
+    @classmethod
+    def _normalize_token(cls, value):
+        """Normalize copied tokens to avoid unicode punctuation issues."""
+        if value is None:
+            raise ValueError("token cannot be empty")
+        token = str(value)
+        token = token.translate(
+            str.maketrans(
+                {
+                    "\u2010": "-",
+                    "\u2011": "-",
+                    "\u2012": "-",
+                    "\u2013": "-",
+                    "\u2014": "-",
+                    "\u2212": "-",
+                    "\u00a0": " ",
+                    "\u2007": " ",
+                    "\u202f": " ",
+                    "\u200b": "",
+                    "\u200c": "",
+                    "\u200d": "",
+                    "\ufeff": "",
+                }
+            )
+        )
+        token = "".join(token.split())
+        if token.startswith("sso="):
+            token = token[4:]
+        token = token.encode("ascii", errors="ignore").decode("ascii")
+        if not token:
+            raise ValueError("token cannot be empty")
+        return token
+
     def is_available(self) -> bool:
         """检查是否可用（状态正常且配额 > 0）"""
         return self.status == TokenStatus.ACTIVE and self.quota > 0
@@ -128,17 +162,23 @@ class TokenInfo(BaseModel):
         self.fail_count = 0
         self.last_fail_reason = None
 
-    def record_fail(self, status_code: int = 401, reason: str = ""):
+    def record_fail(
+        self,
+        status_code: int = 401,
+        reason: str = "",
+        threshold: Optional[int] = None,
+    ):
         """记录失败，达到阈值后自动标记为 expired"""
-        # 401/403 错误计入失败（都表示认证/授权失败）
-        if status_code not in (401, 403):
+        # 仅 401 计入失败
+        if status_code != 401:
             return
 
         self.fail_count += 1
         self.last_fail_at = int(datetime.now().timestamp() * 1000)
         self.last_fail_reason = reason
 
-        if self.fail_count >= FAIL_THRESHOLD:
+        limit = FAIL_THRESHOLD if threshold is None else threshold
+        if self.fail_count >= limit:
             self.status = TokenStatus.EXPIRED
 
     def record_success(self, is_usage: bool = True):

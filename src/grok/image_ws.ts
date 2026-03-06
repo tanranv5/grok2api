@@ -1,4 +1,6 @@
 // Workers 侧使用 fetch 升级 WebSocket 时应走 https 端点。
+import { getWebSocketHeaders } from "./headers";
+
 const WS_URL = "https://grok.com/ws/imagine/listen";
 
 export type ImageWsItem =
@@ -54,20 +56,15 @@ function classifyImage(args: {
 }
 
 async function connectWs(cookie: string): Promise<WebSocket> {
+  const fullHeaders = getWebSocketHeaders(cookie);
+  const cookieHeader = fullHeaders.Cookie ?? cookie;
+  const originHeader = fullHeaders.Origin ?? "https://grok.com";
   const attempts: Array<Record<string, string>> = [
-    {
-      Cookie: cookie,
-      Origin: "https://grok.com",
-      Upgrade: "websocket",
-      Connection: "Upgrade",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-    },
+    fullHeaders,
     // 回退到最小头，避免上游对部分头部严格校验时握手失败。
     {
-      Cookie: cookie,
-      Origin: "https://grok.com",
+      Cookie: cookieHeader,
+      Origin: originHeader,
       Upgrade: "websocket",
       Connection: "Upgrade",
     },

@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { dbAll, dbFirst, dbRun } from "../db";
 import { nowMs } from "../utils/time";
+import { sanitizeTokenValue, sanitizeUniqueTokens } from "../utils/sanitize";
 
 export type TokenType = "sso" | "ssoSuper";
 
@@ -28,6 +29,10 @@ function parseTags(tagsJson: string): string[] {
   } catch {
     return [];
   }
+}
+
+function cleanToken(token: string): string {
+  return sanitizeTokenValue(token);
 }
 
 export function tokenRowToInfo(row: TokenRow): {
@@ -110,16 +115,18 @@ export async function listTokensPaged(db: Env["DB"], limit: number, offset: numb
 }
 
 export async function markTokenActive(db: Env["DB"], token: string): Promise<void> {
+  const cleaned = cleanToken(token);
+  if (!cleaned) return;
   await dbRun(
     db,
     "UPDATE tokens SET status='active', failed_count=0, cooldown_until=NULL, last_failure_time=NULL, last_failure_reason=NULL WHERE token = ?",
-    [token],
+    [cleaned],
   );
 }
 
 export async function addTokens(db: Env["DB"], tokens: string[], token_type: TokenType): Promise<number> {
   const now = nowMs();
-  const cleaned = tokens.map((t) => t.trim()).filter(Boolean);
+  const cleaned = sanitizeUniqueTokens(tokens);
   if (!cleaned.length) return 0;
 
   const stmts = cleaned.map((t) =>
@@ -134,7 +141,7 @@ export async function addTokens(db: Env["DB"], tokens: string[], token_type: Tok
 }
 
 export async function deleteTokens(db: Env["DB"], tokens: string[], token_type: TokenType): Promise<number> {
-  const cleaned = tokens.map((t) => t.trim()).filter(Boolean);
+  const cleaned = sanitizeUniqueTokens(tokens);
   if (!cleaned.length) return 0;
   const placeholders = cleaned.map(() => "?").join(",");
   const before = await dbFirst<{ c: number }>(
@@ -147,16 +154,20 @@ export async function deleteTokens(db: Env["DB"], tokens: string[], token_type: 
 }
 
 export async function updateTokenTags(db: Env["DB"], token: string, token_type: TokenType, tags: string[]): Promise<void> {
+  const cleanedToken = cleanToken(token);
+  if (!cleanedToken) return;
   const cleaned = tags.map((t) => t.trim()).filter(Boolean);
   await dbRun(db, "UPDATE tokens SET tags = ? WHERE token = ? AND token_type = ?", [
     JSON.stringify(cleaned),
-    token,
+    cleanedToken,
     token_type,
   ]);
 }
 
 export async function updateTokenNote(db: Env["DB"], token: string, token_type: TokenType, note: string): Promise<void> {
-  await dbRun(db, "UPDATE tokens SET note = ? WHERE token = ? AND token_type = ?", [note.trim(), token, token_type]);
+  const cleaned = cleanToken(token);
+  if (!cleaned) return;
+  await dbRun(db, "UPDATE tokens SET note = ? WHERE token = ? AND token_type = ?", [note.trim(), cleaned, token_type]);
 }
 
 export async function getAllTags(db: Env["DB"]): Promise<string[]> {
@@ -200,26 +211,30 @@ export async function recordTokenFailure(
   status: number,
   message: string,
 ): Promise<void> {
+  const cleaned = cleanToken(token);
+  if (!cleaned) return;
   const now = nowMs();
   const reason = `${status}: ${message}`;
   await dbRun(
     db,
     "UPDATE tokens SET failed_count = failed_count + 1, last_failure_time = ?, last_failure_reason = ? WHERE token = ?",
-    [now, reason, token],
+    [now, reason, cleaned],
   );
 
-  const row = await dbFirst<{ failed_count: number }>(db, "SELECT failed_count FROM tokens WHERE token = ?", [token]);
+  const row = await dbFirst<{ failed_count: number }>(db, "SELECT failed_count FROM tokens WHERE token = ?", [cleaned]);
   if (!row) return;
   if (status >= 400 && status < 500 && row.failed_count >= MAX_FAILURES) {
-    await dbRun(db, "UPDATE tokens SET status = 'expired' WHERE token = ?", [token]);
+    await dbRun(db, "UPDATE tokens SET status = 'expired' WHERE token = ?", [cleaned]);
   }
 }
 
 export async function applyCooldown(db: Env["DB"], token: string, status: number): Promise<void> {
+  const cleaned = cleanToken(token);
+  if (!cleaned) return;
   const now = nowMs();
   let until: number | null = null;
   if (status === 429) {
-    const row = await dbFirst<{ remaining_queries: number }>(db, "SELECT remaining_queries FROM tokens WHERE token = ?", [token]);
+    const row = await dbFirst<{ remaining_queries: number }>(db, "SELECT remaining_queries FROM tokens WHERE token = ?", [cleaned]);
     const remaining = row?.remaining_queries ?? -1;
     const seconds = remaining > 0 || remaining === -1 ? 3600 : 36000;
     until = now + seconds * 1000;
@@ -227,7 +242,7 @@ export async function applyCooldown(db: Env["DB"], token: string, status: number
     // Workers 不适合做“按请求次数”冷却，这里用短时间冷却近似替代。
     until = now + 30 * 1000;
   }
-  await dbRun(db, "UPDATE tokens SET cooldown_until = ? WHERE token = ?", [until, token]);
+  await dbRun(db, "UPDATE tokens SET cooldown_until = ? WHERE token = ?", [until, cleaned]);
 }
 
 export async function updateTokenLimits(
@@ -235,6 +250,8 @@ export async function updateTokenLimits(
   token: string,
   updates: { remaining_queries?: number; heavy_remaining_queries?: number },
 ): Promise<void> {
+  const cleaned = cleanToken(token);
+  if (!cleaned) return;
   const parts: string[] = [];
   const params: unknown[] = [];
   if (typeof updates.remaining_queries === "number") {
@@ -246,6 +263,6 @@ export async function updateTokenLimits(
     params.push(updates.heavy_remaining_queries);
   }
   if (!parts.length) return;
-  params.push(token);
+  params.push(cleaned);
   await dbRun(db, `UPDATE tokens SET ${parts.join(", ")} WHERE token = ?`, params);
 }

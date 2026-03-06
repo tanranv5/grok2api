@@ -48,9 +48,8 @@ logs/
 *.log
 
 # Data
-data/*.json
-data/tmp/
-data/.locks/
+data/
+app/data/
 
 # Testing
 .pytest_cache/
@@ -59,3 +58,4 @@ htmlcov/
 
 # Project specific
 config.local.toml
+.ace-tool/

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "./env";
 import { openAiRoutes } from "./routes/openai";
+import { videoRoutes } from "./routes/video";
 import { mediaRoutes } from "./routes/media";
 import { adminRoutes } from "./routes/admin";
 import { runKvDailyClear } from "./kv/cleanup";
@@ -52,6 +53,7 @@ async function fetchAsset(c: any, pathname: string): Promise<Response> {
 }
 
 app.route("/v1", openAiRoutes);
+app.route("/v1", videoRoutes);
 app.route("/", mediaRoutes);
 app.route("/", adminRoutes);
 

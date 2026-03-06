@@ -11,6 +11,8 @@ export interface ApiAuthInfo {
   is_admin: boolean;
 }
 
+const textEncoder = new TextEncoder();
+
 function bearerToken(authHeader: string | null): string | null {
   if (!authHeader) return null;
   const m = authHeader.match(/^Bearer\s+(.+)$/i);
@@ -27,16 +29,43 @@ function authError(message: string, code: string): Record<string, unknown> {
   };
 }
 
+function parseApiKeys(value: unknown): string[] {
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const leftBytes = textEncoder.encode(left);
+  const rightBytes = textEncoder.encode(right);
+  const maxLength = Math.max(leftBytes.length, rightBytes.length);
+  let diff = leftBytes.length ^ rightBytes.length;
+  for (let index = 0; index < maxLength; index++) {
+    diff |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+  return diff === 0;
+}
+
 export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }> = async (
   c,
   next,
 ) => {
   const token = bearerToken(c.req.header("Authorization") ?? null);
   const settings = await getSettings(c.env);
+  const globalKeys = parseApiKeys((settings.grok as { api_key?: unknown }).api_key);
 
   if (!token) {
-    const globalKey = (settings.grok.api_key ?? "").trim();
-    if (!globalKey) {
+    if (!globalKeys.length) {
       const row = await dbFirst<{ c: number }>(
         c.env.DB,
         "SELECT COUNT(1) as c FROM api_keys WHERE is_active = 1",
@@ -49,10 +78,11 @@ export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { api
     return c.json(authError("缺少认证令牌", "missing_token"), 401);
   }
 
-  const globalKey = (settings.grok.api_key ?? "").trim();
-  if (globalKey && token === globalKey) {
-    c.set("apiAuth", { key: token, name: "默认管理员", is_admin: true });
-    return next();
+  for (const globalKey of globalKeys) {
+    if (safeEqual(token, globalKey)) {
+      c.set("apiAuth", { key: token, name: "默认管理员", is_admin: true });
+      return next();
+    }
   }
 
   const keyInfo = await validateApiKey(c.env.DB, token);
@@ -71,4 +101,3 @@ export const requireAdminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, 
   if (!ok) return c.json({ error: "会话已过期", code: "SESSION_EXPIRED" }, 401);
   return next();
 };
-

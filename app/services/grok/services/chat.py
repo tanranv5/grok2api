@@ -2,40 +2,107 @@
 Grok Chat 服务
 """
 
-import orjson
-from typing import Dict, List, Any
-from dataclasses import dataclass
+import asyncio
+import re
+import uuid
+from typing import Dict, List, Any, AsyncGenerator, AsyncIterable
 
-from curl_cffi.requests import AsyncSession
+import orjson
+from curl_cffi.requests.errors import RequestsError
 
 from app.core.logger import logger
 from app.core.config import get_config
 from app.core.exceptions import (
     AppException,
-    UpstreamException,
     ValidationException,
     ErrorType,
+    UpstreamException,
+    StreamIdleTimeoutError,
 )
-from app.services.grok.models.model import ModelService
-from app.services.grok.services.assets import UploadService
-from app.services.grok.processors import StreamProcessor, CollectProcessor
-from app.services.grok.utils.retry import retry_on_status
-from app.services.grok.utils.headers import apply_statsig, build_sso_cookie
+from app.services.grok.services.model import ModelService
+from app.services.grok.utils.upload import UploadService
+from app.services.grok.utils import process as proc_base
+from app.services.grok.utils.retry import pick_token, rate_limited, transient_upstream
+from app.services.reverse.app_chat import AppChatReverse
+from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.stream import wrap_stream_with_usage
+from app.services.grok.utils.tool_call import (
+    build_tool_prompt,
+    parse_tool_calls,
+    parse_tool_call_block,
+    format_tool_history,
+)
 from app.services.token import get_token_manager, EffortType
 
 
-CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
+_CHAT_SEMAPHORE = None
+_CHAT_SEM_VALUE = None
 
 
-@dataclass
-class ChatRequest:
-    """聊天请求数据"""
+def extract_tool_text(raw: str, rollout_id: str = "") -> str:
+    if not raw:
+        return ""
+    name_match = re.search(
+        r"<xai:tool_name>(.*?)</xai:tool_name>", raw, flags=re.DOTALL
+    )
+    args_match = re.search(
+        r"<xai:tool_args>(.*?)</xai:tool_args>", raw, flags=re.DOTALL
+    )
 
-    model: str
-    messages: List[Dict[str, Any]]
-    stream: bool = None
-    think: bool = None
+    name = name_match.group(1) if name_match else ""
+    if name:
+        name = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", name, flags=re.DOTALL).strip()
+
+    args = args_match.group(1) if args_match else ""
+    if args:
+        args = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", args, flags=re.DOTALL).strip()
+
+    payload = None
+    if args:
+        try:
+            payload = orjson.loads(args)
+        except orjson.JSONDecodeError:
+            payload = None
+
+    label = name
+    text = args
+    prefix = f"[{rollout_id}]" if rollout_id else ""
+
+    if name == "web_search":
+        label = f"{prefix}[WebSearch]"
+        if isinstance(payload, dict):
+            text = payload.get("query") or payload.get("q") or ""
+    elif name == "search_images":
+        label = f"{prefix}[SearchImage]"
+        if isinstance(payload, dict):
+            text = (
+                payload.get("image_description")
+                or payload.get("description")
+                or payload.get("query")
+                or ""
+            )
+    elif name == "chatroom_send":
+        label = f"{prefix}[AgentThink]"
+        if isinstance(payload, dict):
+            text = payload.get("message") or ""
+
+    if label and text:
+        return f"{label} {text}".strip()
+    if label:
+        return label
+    if text:
+        return text
+    # Fallback: strip tags to keep any raw text.
+    return re.sub(r"<[^>]+>", "", raw, flags=re.DOTALL).strip()
+
+
+def _get_chat_semaphore() -> asyncio.Semaphore:
+    global _CHAT_SEMAPHORE, _CHAT_SEM_VALUE
+    value = max(1, int(get_config("chat.concurrent")))
+    if value != _CHAT_SEM_VALUE:
+        _CHAT_SEM_VALUE = value
+        _CHAT_SEMAPHORE = asyncio.Semaphore(value)
+    return _CHAT_SEMAPHORE
 
 
 class MessageExtractor:
@@ -43,23 +110,57 @@ class MessageExtractor:
 
     @staticmethod
     def extract(
-        messages: List[Dict[str, Any]], is_video: bool = False
-    ) -> tuple[str, List[tuple[str, str]]]:
-        """从 OpenAI 消息格式提取内容，返回 (text, attachments)"""
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
+    ) -> tuple[str, List[str], List[str]]:
+        """从 OpenAI 消息格式提取内容，返回 (text, file_attachments, image_attachments)"""
+        # Pre-process: convert tool-related messages to text format
+        if tools:
+            messages = format_tool_history(messages)
+
         texts = []
-        attachments = []
+        file_attachments: List[str] = []
+        image_attachments: List[str] = []
         extracted = []
 
         for msg in messages:
-            role = msg.get("role", "")
+            role = msg.get("role", "") or "user"
             content = msg.get("content", "")
             parts = []
 
             if isinstance(content, str):
                 if content.strip():
                     parts.append(content)
+            elif isinstance(content, dict):
+                content = [content]
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = item.get("type", "")
+                    if item_type == "text":
+                        if text := item.get("text", "").strip():
+                            parts.append(text)
+                    elif item_type == "image_url":
+                        image_data = item.get("image_url", {})
+                        url = image_data.get("url", "")
+                        if url:
+                            image_attachments.append(url)
+                    elif item_type == "input_audio":
+                        audio_data = item.get("input_audio", {})
+                        data = audio_data.get("data", "")
+                        if data:
+                            file_attachments.append(data)
+                    elif item_type == "file":
+                        file_data = item.get("file", {})
+                        raw = file_data.get("file_data", "")
+                        if raw:
+                            file_attachments.append(raw)
             elif isinstance(content, list):
                 for item in content:
+                    if not isinstance(item, dict):
+                        continue
                     item_type = item.get("type", "")
 
                     if item_type == "text":
@@ -68,38 +169,55 @@ class MessageExtractor:
 
                     elif item_type == "image_url":
                         image_data = item.get("image_url", {})
-                        url = (
-                            image_data.get("url", "")
-                            if isinstance(image_data, dict)
-                            else str(image_data)
-                        )
+                        url = image_data.get("url", "")
                         if url:
-                            attachments.append(("image", url))
+                            image_attachments.append(url)
 
                     elif item_type == "input_audio":
-                        if is_video:
-                            raise ValueError("视频模型不支持 input_audio 类型")
                         audio_data = item.get("input_audio", {})
-                        data = (
-                            audio_data.get("data", "")
-                            if isinstance(audio_data, dict)
-                            else str(audio_data)
-                        )
+                        data = audio_data.get("data", "")
                         if data:
-                            attachments.append(("audio", data))
+                            file_attachments.append(data)
 
                     elif item_type == "file":
-                        if is_video:
-                            raise ValueError("视频模型不支持 file 类型")
                         file_data = item.get("file", {})
-                        url = file_data.get("url", "") or file_data.get("data", "")
-                        if isinstance(file_data, str):
-                            url = file_data
-                        if url:
-                            attachments.append(("file", url))
+                        raw = file_data.get("file_data", "")
+                        if raw:
+                            file_attachments.append(raw)
+
+            # 保留工具调用轨迹，避免部分客户端在多轮工具会话中丢失上下文顺序
+            tool_calls = msg.get("tool_calls")
+            if role == "assistant" and not parts and isinstance(tool_calls, list):
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        continue
+                    fn = call.get("function", {})
+                    if not isinstance(fn, dict):
+                        fn = {}
+                    name = fn.get("name") or call.get("name") or "tool"
+                    arguments = fn.get("arguments", "")
+                    if isinstance(arguments, (dict, list)):
+                        try:
+                            arguments = orjson.dumps(arguments).decode()
+                        except Exception:
+                            arguments = str(arguments)
+                    if not isinstance(arguments, str):
+                        arguments = str(arguments)
+                    arguments = arguments.strip()
+                    parts.append(
+                        f"[tool_call] {name} {arguments}".strip()
+                    )
 
             if parts:
-                extracted.append({"role": role, "text": "\n".join(parts)})
+                role_label = role
+                if role == "tool":
+                    name = msg.get("name")
+                    call_id = msg.get("tool_call_id")
+                    if isinstance(name, str) and name.strip():
+                        role_label = f"tool[{name.strip()}]"
+                    if isinstance(call_id, str) and call_id.strip():
+                        role_label = f"{role_label}#{call_id.strip()}"
+                extracted.append({"role": role_label, "text": "\n".join(parts)})
 
         # 找到最后一条 user 消息
         last_user_index = next(
@@ -116,248 +234,133 @@ class MessageExtractor:
             text = item["text"]
             texts.append(text if i == last_user_index else f"{role}: {text}")
 
-        return "\n\n".join(texts), attachments
+        combined = "\n\n".join(texts)
 
+        # If there are attachments but no text, inject a fallback prompt.
+        if (not combined.strip()) and (file_attachments or image_attachments):
+            combined = "Refer to the following content:"
 
-class ChatRequestBuilder:
-    """请求构造器"""
+        # Prepend tool system prompt if tools are provided
+        if tools:
+            tool_prompt = build_tool_prompt(tools, tool_choice, parallel_tool_calls)
+            if tool_prompt:
+                combined = f"{tool_prompt}\n\n{combined}"
 
-    @staticmethod
-    def build_headers(token: str) -> Dict[str, str]:
-        """构造请求头"""
-        user_agent = get_config("security.user_agent")
-        headers = {
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Baggage": "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c",
-            "Cache-Control": "no-cache",
-            "Content-Type": "application/json",
-            "Origin": "https://grok.com",
-            "Pragma": "no-cache",
-            "Priority": "u=1, i",
-            "Referer": "https://grok.com/",
-            "Sec-Ch-Ua": '"Google Chrome";v="136", "Chromium";v="136", "Not(A:Brand";v="24"',
-            "Sec-Ch-Ua-Arch": "arm",
-            "Sec-Ch-Ua-Bitness": "64",
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Model": "",
-            "Sec-Ch-Ua-Platform": '"macOS"',
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "User-Agent": user_agent,
-        }
-
-        apply_statsig(headers)
-        headers["Cookie"] = build_sso_cookie(token)
-
-        return headers
-
-    @staticmethod
-    def build_payload(
-        message: str,
-        model: str,
-        mode: str = None,
-        file_attachments: List[str] = None,
-        image_attachments: List[str] = None,
-    ) -> Dict[str, Any]:
-        """构造请求体"""
-        merged_attachments = []
-        if file_attachments:
-            merged_attachments.extend(file_attachments)
-        if image_attachments:
-            merged_attachments.extend(image_attachments)
-
-        payload = {
-            "temporary": get_config("chat.temporary"),
-            "modelName": model,
-            "message": message,
-            "fileAttachments": merged_attachments,
-            "imageAttachments": [],
-            "disableSearch": False,
-            "enableImageGeneration": True,
-            "returnImageBytes": False,
-            "enableImageStreaming": True,
-            "imageGenerationCount": 2,
-            "forceConcise": False,
-            "toolOverrides": {},
-            "enableSideBySide": True,
-            "sendFinalMetadata": True,
-            "responseMetadata": {
-                "modelConfigOverride": {"modelMap": {}},
-                "requestModelDetails": {"modelId": model},
-            },
-            "disableMemory": get_config("chat.disable_memory"),
-            "deviceEnvInfo": {
-                "darkModeEnabled": False,
-                "devicePixelRatio": 2,
-                "screenWidth": 2056,
-                "screenHeight": 1329,
-                "viewportWidth": 2056,
-                "viewportHeight": 1083,
-            },
-        }
-
-        if mode:
-            payload["modelMode"] = mode
-
-        return payload
+        return combined, file_attachments, image_attachments
 
 
 class GrokChatService:
     """Grok API 调用服务"""
 
-    def __init__(self, proxy: str = None):
-        self.proxy = proxy or get_config("network.base_proxy_url")
-
     async def chat(
         self,
         token: str,
         message: str,
-        model: str = "grok-3",
+        model: str,
         mode: str = None,
         stream: bool = None,
         file_attachments: List[str] = None,
-        image_attachments: List[str] = None,
-        raw_payload: Dict[str, Any] = None,
+        tool_overrides: Dict[str, Any] = None,
+        model_config_override: Dict[str, Any] = None,
     ):
         """发送聊天请求"""
         if stream is None:
-            stream = get_config("chat.stream")
-
-        headers = ChatRequestBuilder.build_headers(token)
-        payload = (
-            raw_payload
-            if raw_payload is not None
-            else ChatRequestBuilder.build_payload(
-                message, model, mode, file_attachments, image_attachments
-            )
-        )
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        timeout = get_config("network.timeout")
+            stream = get_config("app.stream")
 
         logger.debug(
             f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}"
         )
 
-        # 建立连接
-        async def establish_connection():
-            browser = get_config("security.browser")
-            session = AsyncSession(impersonate=browser)
-            try:
-                response = await session.post(
-                    CHAT_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=timeout,
-                    stream=True,
-                    proxies=proxies,
-                )
-
-                if response.status_code != 200:
-                    content = ""
-                    try:
-                        content = await response.text()
-                    except Exception:
-                        pass
-
-                    logger.error(
-                        f"Chat failed: status={response.status_code}, token={token[:10]}..."
-                    )
-
-                    await session.close()
-                    raise UpstreamException(
-                        message=f"Grok API request failed: {response.status_code}",
-                        details={"status": response.status_code, "body": content},
-                    )
-
-                logger.info(f"Chat connected: model={model}, stream={stream}")
-                return session, response
-
-            except UpstreamException:
-                raise
-            except Exception as e:
-                logger.error(f"Chat request error: {e}")
-                await session.close()
-                raise UpstreamException(
-                    message=f"Chat connection failed: {str(e)}",
-                    details={"error": str(e)},
-                )
-
-        # 重试机制
-        def extract_status(e: Exception) -> int | None:
-            if isinstance(e, UpstreamException) and e.details:
-                return e.details.get("status")
-            return None
-
-        session = None
-        response = None
+        browser = get_config("proxy.browser")
+        semaphore = _get_chat_semaphore()
+        await semaphore.acquire()
+        session = ResettableSession(impersonate=browser)
         try:
-            session, response = await retry_on_status(
-                establish_connection, extract_status=extract_status
+            stream_response = await AppChatReverse.request(
+                session,
+                token,
+                message=message,
+                model=model,
+                mode=mode,
+                file_attachments=file_attachments,
+                tool_overrides=tool_overrides,
+                model_config_override=model_config_override,
             )
-        except Exception as e:
-            status_code = extract_status(e)
-            if status_code:
-                token_mgr = await get_token_manager()
-                reason = str(e)
-                if isinstance(e, UpstreamException) and e.details:
-                    body = e.details.get("body")
-                    if body:
-                        reason = f"{reason} | body: {body}"
-                await token_mgr.record_fail(token, status_code, reason)
+            logger.info(f"Chat connected: model={model}, stream={stream}")
+        except Exception:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            semaphore.release()
             raise
 
-        # 流式传输
-        async def stream_response():
+        async def _stream():
             try:
-                async for line in response.aiter_lines():
+                async for line in stream_response:
                     yield line
             finally:
-                if session:
-                    await session.close()
+                semaphore.release()
 
-        return stream_response()
+        return _stream()
 
-    async def chat_openai(self, token: str, request: ChatRequest):
+    async def chat_openai(
+        self,
+        token: str,
+        model: str,
+        messages: List[Dict[str, Any]],
+        stream: bool = None,
+        reasoning_effort: str | None = None,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
+    ):
         """OpenAI 兼容接口"""
-        model_info = ModelService.get(request.model)
+        model_info = ModelService.get(model)
         if not model_info:
-            raise ValidationException(f"Unknown model: {request.model}")
+            raise ValidationException(f"Unknown model: {model}")
 
         grok_model = model_info.grok_model
         mode = model_info.model_mode
-        is_video = model_info.is_video
-
         # 提取消息和附件
-        try:
-            message, attachments = MessageExtractor.extract(
-                request.messages, is_video=is_video
-            )
-            logger.debug(
-                f"Extracted message length={len(message)}, attachments={len(attachments)}"
-            )
-        except ValueError as e:
-            raise ValidationException(str(e))
+        message, file_attachments, image_attachments = MessageExtractor.extract(
+            messages, tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls
+        )
+        logger.debug(
+            "Extracted message length=%s, files=%s, images=%s",
+            len(message),
+            len(file_attachments),
+            len(image_attachments),
+        )
 
         # 上传附件
-        file_ids = []
-        if attachments:
+        file_ids: List[str] = []
+        image_ids: List[str] = []
+        if file_attachments or image_attachments:
             upload_service = UploadService()
             try:
-                for attach_type, attach_data in attachments:
-                    file_id, _ = await upload_service.upload(attach_data, token)
+                for attach_data in file_attachments:
+                    file_id, _ = await upload_service.upload_file(attach_data, token)
                     file_ids.append(file_id)
-                    logger.debug(
-                        f"Attachment uploaded: type={attach_type}, file_id={file_id}"
-                    )
+                    logger.debug(f"Attachment uploaded: type=file, file_id={file_id}")
+                for attach_data in image_attachments:
+                    file_id, _ = await upload_service.upload_file(attach_data, token)
+                    image_ids.append(file_id)
+                    logger.debug(f"Attachment uploaded: type=image, file_id={file_id}")
             finally:
                 await upload_service.close()
 
-        stream = (
-            request.stream if request.stream is not None else get_config("chat.stream")
-        )
+        all_attachments = file_ids + image_ids
+        stream = stream if stream is not None else get_config("app.stream")
+
+        model_config_override = {
+            "temperature": temperature,
+            "topP": top_p,
+        }
+        if reasoning_effort is not None:
+            model_config_override["reasoningEffort"] = reasoning_effort
 
         response = await self.chat(
             token,
@@ -365,11 +368,12 @@ class GrokChatService:
             grok_model,
             mode,
             stream,
-            file_attachments=file_ids,
-            image_attachments=[],
+            file_attachments=all_attachments,
+            tool_overrides=None,
+            model_config_override=model_config_override,
         )
 
-        return response, stream, request.model
+        return response, stream, model
 
 
 class ChatService:
@@ -380,69 +384,741 @@ class ChatService:
         model: str,
         messages: List[Dict[str, Any]],
         stream: bool = None,
-        thinking: str = None,
+        reasoning_effort: str | None = None,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        tools: List[Dict[str, Any]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool = True,
     ):
         """Chat Completions 入口"""
         # 获取 token
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
 
-        token = None
-        for pool_name in ModelService.pool_candidates_for_model(model):
-            token = token_mgr.get_token(pool_name)
-            if token:
-                break
-
-        if not token:
-            raise AppException(
-                message="No available tokens. Please try again later.",
-                error_type=ErrorType.RATE_LIMIT.value,
-                code="rate_limit_exceeded",
-                status_code=429,
-            )
-
         # 解析参数
-        think = {"enabled": True, "disabled": False}.get(thinking)
-        is_stream = stream if stream is not None else get_config("chat.stream")
+        if reasoning_effort is None:
+            show_think = get_config("app.thinking")
+        else:
+            show_think = reasoning_effort != "none"
+        is_stream = stream if stream is not None else get_config("app.stream")
 
-        # 构造请求
-        chat_request = ChatRequest(
-            model=model, messages=messages, stream=is_stream, think=think
+        # 跨 Token 重试循环
+        tried_tokens = set()
+        max_token_retries = int(get_config("retry.max_retry") or 3)
+        last_error = None
+
+        for attempt in range(max_token_retries):
+            # 选择 token
+            token = await pick_token(token_mgr, model, tried_tokens)
+            if not token:
+                if last_error:
+                    raise last_error
+                raise AppException(
+                    message="No available tokens. Please try again later.",
+                    error_type=ErrorType.RATE_LIMIT.value,
+                    code="rate_limit_exceeded",
+                    status_code=429,
+                )
+
+            tried_tokens.add(token)
+
+            try:
+                # 请求 Grok
+                service = GrokChatService()
+                response, _, model_name = await service.chat_openai(
+                    token,
+                    model,
+                    messages,
+                    stream=is_stream,
+                    reasoning_effort=reasoning_effort,
+                    temperature=temperature,
+                    top_p=top_p,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
+
+                # 处理响应
+                if is_stream:
+                    logger.debug(f"Processing stream response: model={model}")
+                    processor = StreamProcessor(model_name, token, show_think, tools=tools, tool_choice=tool_choice)
+                    return wrap_stream_with_usage(
+                        processor.process(response), token_mgr, token, model
+                    )
+
+                # 非流式
+                logger.debug(f"Processing non-stream response: model={model}")
+                result = await CollectProcessor(model_name, token, tools=tools, tool_choice=tool_choice).process(response)
+                try:
+                    model_info = ModelService.get(model)
+                    effort = (
+                        EffortType.HIGH
+                        if (model_info and model_info.cost.value == "high")
+                        else EffortType.LOW
+                    )
+                    await token_mgr.consume(token, effort)
+                    logger.info(f"Chat completed: model={model}, effort={effort.value}")
+                except Exception as e:
+                    logger.warning(f"Failed to record usage: {e}")
+                return result
+
+            except UpstreamException as e:
+                last_error = e
+
+                if rate_limited(e):
+                    # 配额不足，标记 token 为 cooling 并换 token 重试
+                    await token_mgr.mark_rate_limited(token)
+                    logger.warning(
+                        f"Token {token[:10]}... rate limited (429), "
+                        f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                    )
+                    continue
+
+                if transient_upstream(e):
+                    has_alternative_token = False
+                    for pool_name in ModelService.pool_candidates_for_model(model):
+                        if token_mgr.get_token(pool_name, exclude=tried_tokens):
+                            has_alternative_token = True
+                            break
+                    if not has_alternative_token:
+                        raise
+                    logger.warning(
+                        f"Transient upstream error for token {token[:10]}..., "
+                        f"trying next token (attempt {attempt + 1}/{max_token_retries}): {e}"
+                    )
+                    continue
+
+                # 非 429 错误，不换 token，直接抛出
+                raise
+
+        # 所有 token 都 429，抛出最后的错误
+        if last_error:
+            raise last_error
+        raise AppException(
+            message="No available tokens. Please try again later.",
+            error_type=ErrorType.RATE_LIMIT.value,
+            code="rate_limit_exceeded",
+            status_code=429,
         )
 
-        # 请求 Grok
-        service = GrokChatService()
-        response, _, model_name = await service.chat_openai(token, chat_request)
 
-        # 处理响应
-        if is_stream:
-            logger.debug(f"Processing stream response: model={model}")
-            processor = StreamProcessor(model_name, token, think)
-            return wrap_stream_with_usage(
-                processor.process(response), token_mgr, token, model
-            )
+class StreamProcessor(proc_base.BaseProcessor):
+    """Stream response processor."""
 
-        # 非流式
-        logger.debug(f"Processing non-stream response: model={model}")
-        result = await CollectProcessor(model_name, token).process(response)
+    def __init__(self, model: str, token: str = "", show_think: bool = None, tools: List[Dict[str, Any]] = None, tool_choice: Any = None):
+        super().__init__(model, token)
+        self.response_id: str = None
+        self.fingerprint: str = ""
+        self.rollout_id: str = ""
+        self.think_opened: bool = False
+        self.think_closed_once: bool = False
+        self.image_think_active: bool = False
+        self.role_sent: bool = False
+        self.filter_tags = get_config("app.filter_tags")
+        self.tool_usage_enabled = (
+            "xai:tool_usage_card" in (self.filter_tags or [])
+        )
+        self._tool_usage_opened = False
+        self._tool_usage_buffer = ""
+
+        self.show_think = bool(show_think)
+        self.tools = tools
+        self.tool_choice = tool_choice
+        self._tool_stream_enabled = bool(tools) and tool_choice != "none"
+        self._tool_state = "text"
+        self._tool_buffer = ""
+        self._tool_partial = ""
+        self._tool_calls_seen = False
+        self._tool_call_index = 0
+
+    def _with_tool_index(self, tool_call: Any) -> Any:
+        if not isinstance(tool_call, dict):
+            return tool_call
+        if tool_call.get("index") is None:
+            tool_call = dict(tool_call)
+            tool_call["index"] = self._tool_call_index
+            self._tool_call_index += 1
+        return tool_call
+
+    def _filter_tool_card(self, token: str) -> str:
+        if not token or not self.tool_usage_enabled:
+            return token
+
+        output_parts: list[str] = []
+        rest = token
+        start_tag = "<xai:tool_usage_card"
+        end_tag = "</xai:tool_usage_card>"
+
+        while rest:
+            if self._tool_usage_opened:
+                end_idx = rest.find(end_tag)
+                if end_idx == -1:
+                    self._tool_usage_buffer += rest
+                    return "".join(output_parts)
+                end_pos = end_idx + len(end_tag)
+                self._tool_usage_buffer += rest[:end_pos]
+                line = extract_tool_text(self._tool_usage_buffer, self.rollout_id)
+                if line:
+                    if output_parts and not output_parts[-1].endswith("\n"):
+                        output_parts[-1] += "\n"
+                    output_parts.append(f"{line}\n")
+                self._tool_usage_buffer = ""
+                self._tool_usage_opened = False
+                rest = rest[end_pos:]
+                continue
+
+            start_idx = rest.find(start_tag)
+            if start_idx == -1:
+                output_parts.append(rest)
+                break
+
+            if start_idx > 0:
+                output_parts.append(rest[:start_idx])
+
+            end_idx = rest.find(end_tag, start_idx)
+            if end_idx == -1:
+                self._tool_usage_opened = True
+                self._tool_usage_buffer = rest[start_idx:]
+                break
+
+            end_pos = end_idx + len(end_tag)
+            raw_card = rest[start_idx:end_pos]
+            line = extract_tool_text(raw_card, self.rollout_id)
+            if line:
+                if output_parts and not output_parts[-1].endswith("\n"):
+                    output_parts[-1] += "\n"
+                output_parts.append(f"{line}\n")
+            rest = rest[end_pos:]
+
+        return "".join(output_parts)
+
+    def _filter_token(self, token: str) -> str:
+        """Filter special tags in current token only."""
+        if not token:
+            return token
+
+        if self.tool_usage_enabled:
+            token = self._filter_tool_card(token)
+            if not token:
+                return ""
+
+        if not self.filter_tags:
+            return token
+
+        for tag in self.filter_tags:
+            if tag == "xai:tool_usage_card":
+                continue
+            if f"<{tag}" in token or f"</{tag}" in token:
+                return ""
+
+        return token
+
+    def _suffix_prefix(self, text: str, tag: str) -> int:
+        if not text or not tag:
+            return 0
+        max_keep = min(len(text), len(tag) - 1)
+        for keep in range(max_keep, 0, -1):
+            if text.endswith(tag[:keep]):
+                return keep
+        return 0
+
+    def _handle_tool_stream(self, chunk: str) -> list[tuple[str, Any]]:
+        events: list[tuple[str, Any]] = []
+        if not chunk:
+            return events
+
+        start_tag = "<tool_call>"
+        end_tag = "</tool_call>"
+        data = f"{self._tool_partial}{chunk}"
+        self._tool_partial = ""
+
+        while data:
+            if self._tool_state == "text":
+                start_idx = data.find(start_tag)
+                if start_idx == -1:
+                    keep = self._suffix_prefix(data, start_tag)
+                    emit = data[:-keep] if keep else data
+                    if emit:
+                        events.append(("text", emit))
+                    self._tool_partial = data[-keep:] if keep else ""
+                    break
+
+                before = data[:start_idx]
+                if before:
+                    events.append(("text", before))
+                data = data[start_idx + len(start_tag) :]
+                self._tool_state = "tool"
+                continue
+
+            end_idx = data.find(end_tag)
+            if end_idx == -1:
+                keep = self._suffix_prefix(data, end_tag)
+                append = data[:-keep] if keep else data
+                if append:
+                    self._tool_buffer += append
+                self._tool_partial = data[-keep:] if keep else ""
+                break
+
+            self._tool_buffer += data[:end_idx]
+            data = data[end_idx + len(end_tag) :]
+            tool_call = parse_tool_call_block(self._tool_buffer, self.tools)
+            if tool_call:
+                events.append(("tool", self._with_tool_index(tool_call)))
+                self._tool_calls_seen = True
+            self._tool_buffer = ""
+            self._tool_state = "text"
+
+        return events
+
+    def _flush_tool_stream(self) -> list[tuple[str, Any]]:
+        events: list[tuple[str, Any]] = []
+        if self._tool_state == "text":
+            if self._tool_partial:
+                events.append(("text", self._tool_partial))
+                self._tool_partial = ""
+            return events
+
+        raw = f"{self._tool_buffer}{self._tool_partial}"
+        tool_call = parse_tool_call_block(raw, self.tools)
+        if tool_call:
+            events.append(("tool", self._with_tool_index(tool_call)))
+            self._tool_calls_seen = True
+        elif raw:
+            events.append(("text", f"<tool_call>{raw}"))
+        self._tool_buffer = ""
+        self._tool_partial = ""
+        self._tool_state = "text"
+        return events
+
+    def _sse(self, content: str = "", role: str = None, finish: str = None, tool_calls: list = None) -> str:
+        """Build SSE response."""
+        delta = {}
+        if role:
+            delta["role"] = role
+            delta["content"] = ""
+        elif tool_calls is not None:
+            delta["tool_calls"] = tool_calls
+        elif content:
+            delta["content"] = content
+
+        chunk = {
+            "id": self.response_id or f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "system_fingerprint": self.fingerprint,
+            "choices": [
+                {"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}
+            ],
+        }
+        return f"data: {orjson.dumps(chunk).decode()}\n\n"
+
+    async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
+        """Process stream response.
+
+        Args:
+            response: AsyncIterable[bytes], async iterable of bytes
+
+        Returns:
+            AsyncGenerator[str, None], async generator of strings
+        """
+        idle_timeout = get_config("chat.stream_timeout")
+
         try:
-            model_info = ModelService.get(model)
-            effort = (
-                EffortType.HIGH
-                if (model_info and model_info.cost.value == "high")
-                else EffortType.LOW
+            async for line in proc_base._with_idle_timeout(
+                response, idle_timeout, self.model
+            ):
+                line = proc_base._normalize_line(line)
+                if not line:
+                    continue
+                try:
+                    data = orjson.loads(line)
+                except orjson.JSONDecodeError:
+                    continue
+
+                resp = data.get("result", {}).get("response", {})
+                is_thinking = bool(resp.get("isThinking"))
+                # isThinking controls <think> tagging
+                # when absent, treat as False
+
+                if (llm := resp.get("llmInfo")) and not self.fingerprint:
+                    self.fingerprint = llm.get("modelHash", "")
+                if rid := resp.get("responseId"):
+                    self.response_id = rid
+                if rid := resp.get("rolloutId"):
+                    self.rollout_id = str(rid)
+
+                if not self.role_sent:
+                    yield self._sse(role="assistant")
+                    self.role_sent = True
+
+                if img := resp.get("streamingImageGenerationResponse"):
+                    if not self.show_think:
+                        continue
+                    self.image_think_active = True
+                    if not self.think_opened:
+                        yield self._sse("<think>\n")
+                        self.think_opened = True
+                    idx = img.get("imageIndex", 0) + 1
+                    progress = img.get("progress", 0)
+                    yield self._sse(
+                        f"正在生成第{idx}张图片中，当前进度{progress}%\n"
+                    )
+                    continue
+
+                if mr := resp.get("modelResponse"):
+                    if self.image_think_active and self.think_opened:
+                        yield self._sse("\n</think>\n")
+                        self.think_opened = False
+                        self.think_closed_once = True
+                    self.image_think_active = False
+                    for url in proc_base._collect_images(mr):
+                        parts = url.split("/")
+                        img_id = parts[-2] if len(parts) >= 2 else "image"
+                        dl_service = self._get_dl()
+                        rendered = await dl_service.render_image(
+                            url, self.token, img_id
+                        )
+                        yield self._sse(f"{rendered}\n")
+
+                    if (
+                        (meta := mr.get("metadata", {}))
+                        .get("llm_info", {})
+                        .get("modelHash")
+                    ):
+                        self.fingerprint = meta["llm_info"]["modelHash"]
+                    continue
+
+                if card := resp.get("cardAttachment"):
+                    json_data = card.get("jsonData")
+                    if isinstance(json_data, str) and json_data.strip():
+                        try:
+                            card_data = orjson.loads(json_data)
+                        except orjson.JSONDecodeError:
+                            card_data = None
+                        if isinstance(card_data, dict):
+                            image = card_data.get("image") or {}
+                            original = image.get("original")
+                            title = image.get("title") or ""
+                            if original:
+                                title_safe = title.replace("\n", " ").strip()
+                                if title_safe:
+                                    yield self._sse(f"![{title_safe}]({original})\n")
+                                else:
+                                    yield self._sse(f"![image]({original})\n")
+                    continue
+
+                if (token := resp.get("token")) is not None:
+                    if not token:
+                        continue
+                    if is_thinking and self.think_closed_once and not self.image_think_active:
+                        continue
+                    filtered = self._filter_token(token)
+                    if not filtered:
+                        continue
+                    in_think = (
+                        (is_thinking and not self.think_closed_once)
+                        or self.image_think_active
+                    )
+                    if in_think:
+                        if not self.show_think:
+                            continue
+                        if not self.think_opened:
+                            yield self._sse("<think>\n")
+                            self.think_opened = True
+                    else:
+                        if self.think_opened:
+                            yield self._sse("\n</think>\n")
+                            self.think_opened = False
+                            self.think_closed_once = True
+
+                    if in_think:
+                        yield self._sse(filtered)
+                        continue
+
+                    if self._tool_stream_enabled:
+                        for kind, payload in self._handle_tool_stream(filtered):
+                            if kind == "text":
+                                yield self._sse(payload)
+                            elif kind == "tool":
+                                yield self._sse(tool_calls=[payload])
+                        continue
+
+                    yield self._sse(filtered)
+
+            if self.think_opened:
+                yield self._sse("</think>\n")
+                self.think_closed_once = True
+
+            if self._tool_stream_enabled:
+                for kind, payload in self._flush_tool_stream():
+                    if kind == "text":
+                        yield self._sse(payload)
+                    elif kind == "tool":
+                        yield self._sse(tool_calls=[payload])
+                finish_reason = "tool_calls" if self._tool_calls_seen else "stop"
+                yield self._sse(finish=finish_reason)
+            else:
+                yield self._sse(finish="stop")
+
+            yield "data: [DONE]\n\n"
+        except asyncio.CancelledError:
+            logger.debug("Stream cancelled by client", extra={"model": self.model})
+        except StreamIdleTimeoutError as e:
+            raise UpstreamException(
+                message=f"Stream idle timeout after {e.idle_seconds}s",
+                status_code=504,
+                details={
+                    "error": str(e),
+                    "type": "stream_idle_timeout",
+                    "idle_seconds": e.idle_seconds,
+                },
             )
-            await token_mgr.consume(token, effort)
-            logger.info(f"Chat completed: model={model}, effort={effort.value}")
+        except RequestsError as e:
+            if proc_base._is_http2_error(e):
+                logger.warning(f"HTTP/2 stream error: {e}", extra={"model": self.model})
+                raise UpstreamException(
+                    message="Upstream connection closed unexpectedly",
+                    status_code=502,
+                    details={"error": str(e), "type": "http2_stream_error"},
+                )
+            logger.error(f"Stream request error: {e}", extra={"model": self.model})
+            raise UpstreamException(
+                message=f"Upstream request failed: {e}",
+                status_code=502,
+                details={"error": str(e)},
+            )
         except Exception as e:
-            logger.warning(f"Failed to record usage: {e}")
+            logger.error(
+                f"Stream processing error: {e}",
+                extra={"model": self.model, "error_type": type(e).__name__},
+            )
+            raise
+        finally:
+            await self.close()
+
+
+class CollectProcessor(proc_base.BaseProcessor):
+    """Non-stream response processor."""
+
+    def __init__(self, model: str, token: str = "", tools: List[Dict[str, Any]] = None, tool_choice: Any = None):
+        super().__init__(model, token)
+        self.filter_tags = get_config("app.filter_tags")
+        self.tools = tools
+        self.tool_choice = tool_choice
+
+    def _filter_content(self, content: str) -> str:
+        """Filter special tags in content."""
+        if not content or not self.filter_tags:
+            return content
+
+        result = content
+        if "xai:tool_usage_card" in self.filter_tags:
+            rollout_id = ""
+            rollout_match = re.search(
+                r"<rolloutId>(.*?)</rolloutId>", result, flags=re.DOTALL
+            )
+            if rollout_match:
+                rollout_id = rollout_match.group(1).strip()
+
+            result = re.sub(
+                r"<xai:tool_usage_card[^>]*>.*?</xai:tool_usage_card>",
+                lambda match: (
+                    f"{extract_tool_text(match.group(0), rollout_id)}\n"
+                    if extract_tool_text(match.group(0), rollout_id)
+                    else ""
+                ),
+                result,
+                flags=re.DOTALL,
+            )
+
+        for tag in self.filter_tags:
+            if tag == "xai:tool_usage_card":
+                continue
+            pattern = rf"<{re.escape(tag)}[^>]*>.*?</{re.escape(tag)}>|<{re.escape(tag)}[^>]*/>"
+            result = re.sub(pattern, "", result, flags=re.DOTALL)
+
         return result
+
+    async def process(self, response: AsyncIterable[bytes]) -> dict[str, Any]:
+        """Process and collect full response."""
+        response_id = ""
+        fingerprint = ""
+        content = ""
+        idle_timeout = get_config("chat.stream_timeout")
+
+        try:
+            async for line in proc_base._with_idle_timeout(
+                response, idle_timeout, self.model
+            ):
+                line = proc_base._normalize_line(line)
+                if not line:
+                    continue
+                try:
+                    data = orjson.loads(line)
+                except orjson.JSONDecodeError:
+                    continue
+
+                resp = data.get("result", {}).get("response", {})
+
+                if (llm := resp.get("llmInfo")) and not fingerprint:
+                    fingerprint = llm.get("modelHash", "")
+
+                if mr := resp.get("modelResponse"):
+                    response_id = mr.get("responseId", "")
+                    content = mr.get("message", "")
+
+                    card_map: dict[str, tuple[str, str]] = {}
+                    for raw in mr.get("cardAttachmentsJson") or []:
+                        if not isinstance(raw, str) or not raw.strip():
+                            continue
+                        try:
+                            card_data = orjson.loads(raw)
+                        except orjson.JSONDecodeError:
+                            continue
+                        if not isinstance(card_data, dict):
+                            continue
+                        card_id = card_data.get("id")
+                        image = card_data.get("image") or {}
+                        original = image.get("original")
+                        if not card_id or not original:
+                            continue
+                        title = image.get("title") or ""
+                        card_map[card_id] = (title, original)
+
+                    if content and card_map:
+                        def _render_card(match: re.Match) -> str:
+                            card_id = match.group(1)
+                            item = card_map.get(card_id)
+                            if not item:
+                                return ""
+                            title, original = item
+                            title_safe = title.replace("\n", " ").strip() or "image"
+                            prefix = ""
+                            if match.start() > 0:
+                                prev = content[match.start() - 1]
+                                if prev not in ("\n", "\r"):
+                                    prefix = "\n"
+                            return f"{prefix}![{title_safe}]({original})"
+
+                        content = re.sub(
+                            r'<grok:render[^>]*card_id="([^"]+)"[^>]*>.*?</grok:render>',
+                            _render_card,
+                            content,
+                            flags=re.DOTALL,
+                        )
+
+                    if urls := proc_base._collect_images(mr):
+                        content += "\n"
+                        for url in urls:
+                            parts = url.split("/")
+                            img_id = parts[-2] if len(parts) >= 2 else "image"
+                            dl_service = self._get_dl()
+                            rendered = await dl_service.render_image(
+                                url, self.token, img_id
+                            )
+                            content += f"{rendered}\n"
+
+                    if (
+                        (meta := mr.get("metadata", {}))
+                        .get("llm_info", {})
+                        .get("modelHash")
+                    ):
+                        fingerprint = meta["llm_info"]["modelHash"]
+
+        except asyncio.CancelledError:
+            logger.debug("Collect cancelled by client", extra={"model": self.model})
+            raise
+        except StreamIdleTimeoutError as e:
+            logger.warning(f"Collect idle timeout: {e}", extra={"model": self.model})
+            raise UpstreamException(
+                message=f"Collect stream idle timeout after {e.idle_seconds}s",
+                details={
+                    "error": str(e),
+                    "type": "stream_idle_timeout",
+                    "idle_seconds": e.idle_seconds,
+                    "status": 504,
+                },
+            )
+        except RequestsError as e:
+            if proc_base._is_http2_error(e):
+                logger.warning(
+                    f"HTTP/2 stream error in collect: {e}", extra={"model": self.model}
+                )
+                raise UpstreamException(
+                    message="Upstream connection closed unexpectedly",
+                    details={"error": str(e), "type": "http2_stream_error", "status": 502},
+                )
+            logger.error(f"Collect request error: {e}", extra={"model": self.model})
+            raise UpstreamException(
+                message=f"Upstream request failed: {e}",
+                details={"error": str(e), "status": 502},
+            )
+        except Exception as e:
+            logger.error(
+                f"Collect processing error: {e}",
+                extra={"model": self.model, "error_type": type(e).__name__},
+            )
+            raise
+        finally:
+            await self.close()
+
+        content = self._filter_content(content)
+
+        # Parse for tool calls if tools were provided
+        finish_reason = "stop"
+        tool_calls_result = None
+        if self.tools and self.tool_choice != "none":
+            text_content, tool_calls_list = parse_tool_calls(content, self.tools)
+            if tool_calls_list:
+                tool_calls_result = tool_calls_list
+                content = text_content  # May be None
+                finish_reason = "tool_calls"
+
+        message_obj = {
+            "role": "assistant",
+            "content": content,
+            "refusal": None,
+            "annotations": [],
+        }
+        if tool_calls_result:
+            message_obj["tool_calls"] = tool_calls_result
+
+        return {
+            "id": response_id,
+            "object": "chat.completion",
+            "created": self.created,
+            "model": self.model,
+            "system_fingerprint": fingerprint,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message_obj,
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "image_tokens": 0,
+                },
+                "completion_tokens_details": {
+                    "text_tokens": 0,
+                    "audio_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
+            },
+        }
 
 
 __all__ = [
     "GrokChatService",
-    "ChatRequest",
-    "ChatRequestBuilder",
     "MessageExtractor",
     "ChatService",
 ]
