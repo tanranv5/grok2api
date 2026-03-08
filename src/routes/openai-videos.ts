@@ -38,17 +38,22 @@ const DEFAULT_VIDEO_CONFIG: Readonly<VideoConfig> = {
   videoLength: 6,
   resolutionName: "480p",
 };
+const APPLIED_VIDEO_CONFIG: Readonly<VideoConfig> = {
+  aspectRatio: "3:2",
+  videoLength: 6,
+  resolutionName: "480p",
+};
 const VIDEO_DURATION_MAP: Readonly<Record<string, 6 | 10 | 15>> = {
   "4": 6,
   "8": 10,
   "12": 15,
 };
-const VIDEO_SIZE_MAP: Readonly<Record<string, VideoConfig>> = {
-  "1280x720": { aspectRatio: "16:9", videoLength: 6, resolutionName: "720p" },
-  "720x1280": { aspectRatio: "9:16", videoLength: 6, resolutionName: "720p" },
-  "1792x1024": { aspectRatio: "3:2", videoLength: 6, resolutionName: "720p" },
-  "1024x1792": { aspectRatio: "2:3", videoLength: 6, resolutionName: "720p" },
-  "1024x1024": { aspectRatio: "1:1", videoLength: 6, resolutionName: "480p" },
+const VIDEO_ASPECT_RATIO_MAP: Readonly<Record<string, VideoAspectRatio>> = {
+  "1280x720": "16:9",
+  "720x1280": "9:16",
+  "1792x1024": "3:2",
+  "1024x1792": "2:3",
+  "1024x1024": "1:1",
 };
 
 function openAiError(message: string, code: string): Record<string, unknown> {
@@ -109,22 +114,18 @@ function parseVideoLength(raw: unknown): 6 | 10 | 15 {
   return mapped ?? DEFAULT_VIDEO_CONFIG.videoLength;
 }
 
-function parseVideoSize(raw: unknown): Pick<VideoConfig, "aspectRatio" | "resolutionName"> {
-  if (typeof raw !== "string") {
-    return {
-      aspectRatio: DEFAULT_VIDEO_CONFIG.aspectRatio,
-      resolutionName: DEFAULT_VIDEO_CONFIG.resolutionName,
-    };
-  }
+function parseVideoAspectRatio(raw: unknown): VideoAspectRatio {
+  if (typeof raw !== "string") return DEFAULT_VIDEO_CONFIG.aspectRatio;
   const normalized = raw.trim().toLowerCase();
-  const mapped = VIDEO_SIZE_MAP[normalized];
-  if (!mapped) {
-    return {
-      aspectRatio: DEFAULT_VIDEO_CONFIG.aspectRatio,
-      resolutionName: DEFAULT_VIDEO_CONFIG.resolutionName,
-    };
-  }
-  return { aspectRatio: mapped.aspectRatio, resolutionName: mapped.resolutionName };
+  return VIDEO_ASPECT_RATIO_MAP[normalized] ?? DEFAULT_VIDEO_CONFIG.aspectRatio;
+}
+
+function applyBasicVideoPolicy(config: VideoConfig): VideoConfig {
+  return {
+    aspectRatio: config.aspectRatio,
+    videoLength: APPLIED_VIDEO_CONFIG.videoLength,
+    resolutionName: APPLIED_VIDEO_CONFIG.resolutionName,
+  };
 }
 
 function parseVideoResult(text: string): { videoUrl: string | null; errorMessage: string | null } {
@@ -166,13 +167,16 @@ async function parseCreateVideoRequest(request: Request): Promise<CreateVideoReq
     const requestedModel = normalizeRequestedVideoModel(form.get("model") || "sora-2");
     const inputReferenceValue = form.get("input_reference");
     const inputReference = inputReferenceValue instanceof File ? await fileToDataUrl(inputReferenceValue) : null;
-    const length = parseVideoLength(form.get("seconds"));
-    const sizeConfig = parseVideoSize(form.get("size"));
+    const requestedConfig: VideoConfig = {
+      aspectRatio: parseVideoAspectRatio(form.get("size")),
+      videoLength: parseVideoLength(form.get("seconds")),
+      resolutionName: DEFAULT_VIDEO_CONFIG.resolutionName,
+    };
     return {
       prompt,
       requestedModel,
       inputReference,
-      config: { ...sizeConfig, videoLength: length },
+      config: applyBasicVideoPolicy(requestedConfig),
     };
   }
 
@@ -180,13 +184,16 @@ async function parseCreateVideoRequest(request: Request): Promise<CreateVideoReq
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const requestedModel = normalizeRequestedVideoModel(body.model ?? "sora-2");
   const imageUrl = typeof body.image_url === "string" ? body.image_url.trim() : "";
-  const length = parseVideoLength(body.seconds);
-  const sizeConfig = parseVideoSize(body.size);
+  const requestedConfig: VideoConfig = {
+    aspectRatio: parseVideoAspectRatio(body.size),
+    videoLength: parseVideoLength(body.seconds),
+    resolutionName: DEFAULT_VIDEO_CONFIG.resolutionName,
+  };
   return {
     prompt,
     requestedModel,
     inputReference: imageUrl || null,
-    config: { ...sizeConfig, videoLength: length },
+    config: applyBasicVideoPolicy(requestedConfig),
   };
 }
 
@@ -280,7 +287,6 @@ async function runOpenAiVideoTask(args: {
 export function registerOpenAiVideoRoutes(openAiRoutes: OpenAiRouteApp): void {
   openAiRoutes.post("/videos", async (c) => {
     const startedAt = Date.now();
-    const origin = new URL(c.req.url).origin;
     const apiAuth = c.get("apiAuth");
     const clientIp = getClientIp(c.req.raw);
 
