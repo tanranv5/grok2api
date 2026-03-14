@@ -14,6 +14,7 @@ import { getDynamicHeaders } from "../grok/headers";
 type PublicVars = { apiAuth: ApiAuthInfo };
 
 const LIVEKIT_TOKEN_API = "https://grok.com/rest/livekit/tokens";
+const IMAGINE_BATCH_SIZE = 6;
 
 export const publicRoutes = new Hono<{ Bindings: Env; Variables: PublicVars }>();
 
@@ -190,7 +191,7 @@ publicRoutes.get("/imagine/sse", async (c) => {
     cookie,
     prompt: task.prompt,
     aspect_ratio: task.aspectRatio,
-    n: 1,
+    n: IMAGINE_BATCH_SIZE,
     enable_nsfw: task.nsfw,
     timeout: Math.max(10, Number(settings.grok.stream_idle_timeout ?? 120) || 120),
     blocked_seconds: Math.max(5, Number(settings.grok.image_ws_blocked_seconds ?? 15) || 15),
@@ -246,7 +247,7 @@ publicRoutes.get("/imagine/ws", async (c) => {
       cookie,
       prompt: task.prompt,
       aspect_ratio: task.aspectRatio,
-      n: 1,
+      n: IMAGINE_BATCH_SIZE,
       enable_nsfw: task.nsfw,
       timeout: Math.max(10, Number(settings.grok.stream_idle_timeout ?? 120) || 120),
       blocked_seconds: Math.max(5, Number(settings.grok.image_ws_blocked_seconds ?? 15) || 15),

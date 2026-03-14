@@ -109,7 +109,11 @@ publicVideoRoutes.post("/video/start", async (c) => {
       });
       c.executionCtx.waitUntil(runVideoExtendTask(c.env, taskId, body));
     }
-    return c.json({ task_ids: taskIds });
+    return c.json({
+      task_id: taskIds[0] ?? "",
+      task_ids: taskIds,
+      concurrent,
+    });
   }
 
   const taskIds: string[] = [];
@@ -135,7 +139,11 @@ publicVideoRoutes.post("/video/start", async (c) => {
     const payload = await response.json() as { id?: string };
     if (payload.id) taskIds.push(payload.id);
   }
-  return c.json({ task_ids: taskIds });
+  return c.json({
+    task_id: taskIds[0] ?? "",
+    task_ids: taskIds,
+    concurrent,
+  });
 });
 
 publicVideoRoutes.post("/video/stop", async (c) => {
