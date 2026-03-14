@@ -53,9 +53,9 @@ async function fetchAsset(c: any, pathname: string): Promise<Response> {
   }
 }
 
+app.route("/v1/public", publicRoutes);
 app.route("/v1", openAiRoutes);
 app.route("/v1", videoRoutes);
-app.route("/v1/public", publicRoutes);
 app.route("/", mediaRoutes);
 app.route("/", adminRoutes);
 
