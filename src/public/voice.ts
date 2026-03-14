@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import type { ApiAuthInfo } from "../auth";
 import { authenticateApiToken } from "../auth";
+import { verifyAdminSession } from "../repo/adminSessions";
 
 const VOICE_SIGNAL_PROXY_PREFIX = "/v1/public/voice/signal/";
 
@@ -14,7 +15,16 @@ export async function authenticateQueryToken(
   rawToken: string | null,
 ): Promise<ApiAuthInfo | null> {
   if (!rawToken) return authenticateApiToken(env, null);
-  return authenticateApiToken(env, `Bearer ${rawToken}`);
+
+  const normalized = rawToken.trim();
+  if (!normalized) return authenticateApiToken(env, null);
+
+  const apiAuth = await authenticateApiToken(env, `Bearer ${normalized}`);
+  if (apiAuth) return apiAuth;
+
+  const adminOk = await verifyAdminSession(env.DB, normalized);
+  if (!adminOk) return null;
+  return { key: normalized, name: "AdminSession", is_admin: true };
 }
 
 export async function handlePublicVoiceSignalProxy(c: any): Promise<Response> {

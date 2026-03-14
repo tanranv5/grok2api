@@ -173,7 +173,10 @@ publicRoutes.post("/imagine/workbench/edit", async (c) => {
 });
 
 publicRoutes.get("/imagine/sse", async (c) => {
-  const authInfo = await authenticateQueryToken(c.env, c.req.query("public_key") ?? null);
+  const authInfo = await authenticateQueryToken(
+    c.env,
+    c.req.query("public_key") ?? c.req.query("api_key") ?? c.req.query("admin_token") ?? null,
+  );
   if (!authInfo) return c.text("Unauthorized", 401);
   const task = await getImagineTaskSession(c.env, String(c.req.query("task_id") ?? "").trim());
   if (!task) return c.text("Task not found", 404);
@@ -212,7 +215,10 @@ publicRoutes.get("/imagine/sse", async (c) => {
 });
 
 publicRoutes.get("/imagine/ws", async (c) => {
-  const authInfo = await authenticateQueryToken(c.env, c.req.query("public_key") ?? null);
+  const authInfo = await authenticateQueryToken(
+    c.env,
+    c.req.query("public_key") ?? c.req.query("api_key") ?? c.req.query("admin_token") ?? null,
+  );
   if (!authInfo) return c.text("Unauthorized", 401);
   const task = await getImagineTaskSession(c.env, String(c.req.query("task_id") ?? "").trim());
   if (!task) return c.text("Task not found", 404);
