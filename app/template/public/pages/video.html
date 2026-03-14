@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+  <title>Grok2API - Video 视频工作台</title>
+  <link rel="icon" href="/static/common/img/favicon/favicon.ico">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#fafafa">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Grok2API">
+  <link rel="apple-touch-icon" href="/static/public/pwa/apple-touch-icon.png">
+  <script src="/static/vendor/tailwind/tailwindcss-cdn.js"></script>
+  <link href="/static/vendor/geist/geist-sans.css" rel="stylesheet">
+  <link href="/static/vendor/geist/geist-mono.css" rel="stylesheet">
+  <script src="/static/common/js/theme.js?v=0.1.0"></script>
+  <link href="/static/common/css/common.css?v=0.3.7" rel="stylesheet">
+  <link href="/static/public/css/video.css?v=0.4.22" rel="stylesheet">
+  <link href="/static/common/css/toast.css" rel="stylesheet">
+</head>
+
+<body class="public-page min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="flex-1 container mx-auto max-w-6xl px-4 sm:px-6 py-5 sm:py-8 fade-in">
+    <div class="space-y-4 sm:space-y-6">
+      <div class="video-header-row">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">Video 视频工作台</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">生成短视频，支持参考图、多种预设风格与视频拼接。</p>
+        </div>
+      </div>
+
+      <div class="h-px bg-[var(--border)]"></div>
+
+      <div class="video-main-grid">
+        <div class="video-main-left">
+          <div class="video-card">
+            <div class="video-workbench-shell">
+              <div class="video-workbench-left">
+                <div id="refDropZone" class="video-workbench-panel">
+                  <div class="panel-title">当前画面</div>
+                  <div class="upload-row">
+                    <button id="selectImageFileBtn" class="geist-button-outline" type="button">添加参考图</button>
+                    <span id="imageFileName" class="file-name">已添加 0/7 张</span>
+                  </div>
+                  <input id="imageUrlInput" class="geist-input hidden" placeholder="https://... 或 data:image/...">
+                  <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*" multiple>
+                  <div id="referenceStrip" class="reference-strip">
+                    <div class="reference-empty">可上传 / 粘贴 / 拖拽参考图（最多 7 张）</div>
+                  </div>
+                  <div class="parent-quick-row">
+                    <label class="field-label" for="parentPostInput">粘贴 parentPostId（全局记忆）</label>
+                    <div class="parent-quick-input-wrap">
+                      <input id="parentPostInput" class="geist-input" placeholder="粘贴 parentPostId 或包含它的 URL">
+                      <button id="applyParentBtn" class="geist-button-outline text-xs px-3" type="button">使用</button>
+                    </div>
+                  </div>
+                  <div id="referencePreview" class="preview-shell">
+                    <div id="currentGallery" class="current-gallery hidden"></div>
+                    <div id="previewEmpty" class="preview-empty">请先添加参考图</div>
+                    <div id="dropHint" class="drop-hint">支持拖拽图片到此处，或按 Ctrl+V 粘贴图片</div>
+                  </div>
+                  <div class="meta-grid ref-meta-grid">
+                    <div class="meta-item">
+                      <div class="meta-label">当前 parentPostId</div>
+                      <div id="currentParentId" class="meta-value">-</div>
+                    </div>
+                    <div class="meta-item">
+                      <div class="meta-label">当前模式</div>
+                      <div id="currentMode" class="meta-value">upload</div>
+                    </div>
+                  </div>
+                  <div class="field video-prompt-field">
+                    <label class="field-label" for="promptInput">视频提示词</label>
+                    <div class="video-prompt-wrap">
+                      <div id="promptRichInput" class="prompt-rich-input" contenteditable="true" data-placeholder="例如：@Image 1 站在中间，@Image 2 从左侧走入"></div>
+                      <div id="referenceMentionMenu" class="reference-mention-menu hidden"></div>
+                      <textarea id="promptInput" class="geist-input video-textarea prompt-textarea-proxy" data-prompt-enhancer="off" aria-hidden="true" tabindex="-1"
+                        placeholder="例如：@Image 1 站在中间，@Image 2 从左侧走入"></textarea>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="editPanel" class="video-card edit-panel">
+            <div class="video-preview-header">
+              <div class="card-title">视频延长工作区</div>
+              <div class="preview-actions">
+                <button id="pickCachedVideoBtn" class="geist-button-outline text-xs px-3">选择视频</button>
+                <button id="uploadWorkVideoBtn" class="geist-button-outline text-xs px-3" type="button">上传视频</button>
+                <input id="workVideoFileInput" class="ref-file-input" type="file" accept="video/*">
+                <button id="clearBtn" class="geist-button-outline text-xs px-3">清空</button>
+              </div>
+            </div>
+            <div id="editHint" class="video-empty">请先选择或生成一个视频，工作区会始终展示当前视频。</div>
+            <div id="editBody">
+              <div class="meta-grid edit-meta-grid">
+                <div class="meta-item">
+                  <div class="meta-label">当前工作视频</div>
+                  <div id="mergeVideoA" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">历史数量</div>
+                  <div id="historyCount" class="meta-value">0</div>
+                </div>
+              </div>
+              <div class="edit-preview-wrap">
+                <video id="editVideo" controls preload="metadata" playsinline webkit-playsinline></video>
+              </div>
+              <div class="edit-slider-wrap">
+                <input id="editTimeline" class="timeline-delete-zone" data-delete-side="right" type="range" min="0"
+                  max="100000" step="1" value="0">
+                <div class="progress-meta">
+                  <span id="editTimeText">00:00.000</span>
+                  <span id="editDurationText">总时长 -</span>
+                </div>
+              </div>
+              <div class="meta-grid edit-meta-grid">
+                <div class="meta-item">
+                  <div class="meta-label">frame_index</div>
+                  <div id="editFrameIndex" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">timestamp_ms</div>
+                  <div id="editTimestampMs" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">extend_post_id</div>
+                  <div id="editExtendPostId" class="meta-value">-</div>
+                </div>
+              </div>
+              <div class="settings-block prompt-block edit-prompt-block">
+                <label class="field-label" for="editPromptInput">延长提示词</label>
+                <textarea id="editPromptInput" class="geist-input video-textarea"
+                  placeholder="描述后续要延长的画面内容（留空则自然延续）"></textarea>
+              </div>
+              <div class="preview-actions splice-action-row">
+                <button id="spliceBtn" class="geist-button gap-2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 12h14" />
+                    <path d="M12 5v14" />
+                  </svg>
+                  <span>延长视频</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="video-main-right">
+          <div class="video-card">
+            <div class="status-header">
+              <div class="card-title">运行状态</div>
+              <span id="statusText" class="status-text">未连接</span>
+            </div>
+            <div class="progress-wrap">
+              <div id="progressBar" class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+              </div>
+              <div class="progress-meta">
+                <span id="progressText">0%</span>
+                <span id="durationValue">耗时 -</span>
+              </div>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-item">
+                <div class="meta-label">比例</div>
+                <div id="aspectValue" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label">时长</div>
+                <div id="lengthValue" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label">分辨率</div>
+                <div id="resolutionValue" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label">预设</div>
+                <div id="presetValue" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label">并发</div>
+                <div id="countValue" class="meta-value">1</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="video-card video-settings-card">
+            <div class="card-title">生成参数</div>
+            <div class="video-settings-grid">
+              <div class="settings-block">
+                <label class="field-label" for="ratioSelect">画面比例</label>
+                <select id="ratioSelect" class="geist-input">
+                  <option value="3:2" selected>3:2 横构图</option>
+                  <option value="2:3">2:3 竖构图</option>
+                  <option value="16:9">16:9 宽屏</option>
+                  <option value="9:16">9:16 竖屏</option>
+                  <option value="1:1">1:1 方形</option>
+                </select>
+              </div>
+              <div class="settings-block">
+                <label class="field-label" for="lengthSelect">视频时长</label>
+                <select id="lengthSelect" class="geist-input">
+                  <option value="6" selected>6 秒</option>
+                  <option value="10">10 秒</option>
+                  <option value="15">15 秒</option>
+                </select>
+              </div>
+              <div class="settings-block">
+                <label class="field-label" for="resolutionSelect">分辨率</label>
+                <select id="resolutionSelect" class="geist-input">
+                  <option value="480p" selected>480p</option>
+                  <option value="720p">720p</option>
+                </select>
+              </div>
+              <div class="settings-block">
+                <label class="field-label" for="presetSelect">风格预设</label>
+                <select id="presetSelect" class="geist-input">
+                  <option value="normal" selected>Normal</option>
+                  <option value="fun">Fun</option>
+                  <option value="spicy">Spicy</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="settings-block">
+                <label class="field-label" for="singleImageModeSelect">单图模式</label>
+                <select id="singleImageModeSelect" class="geist-input">
+                  <option value="frame" selected>作为首帧</option>
+                  <option value="reference">作为参考图</option>
+                </select>
+              </div>
+              <div class="settings-block">
+                <label class="field-label" for="concurrentSelect">并发视频数</label>
+                <select id="concurrentSelect" class="geist-input">
+                  <option value="1" selected>1 路</option>
+                  <option value="2">2 路</option>
+                  <option value="3">3 路</option>
+                  <option value="4">4 路</option>
+                </select>
+              </div>
+              <div class="settings-block">
+                <label class="field-label">&nbsp;</label>
+                <button id="clearImageFileBtn" class="geist-button-outline video-side-btn" type="button">清除参考图</button>
+              </div>
+            </div>
+            <div class="settings-actions settings-actions-side">
+              <button id="startBtn" class="geist-button gap-2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                开始生成
+              </button>
+              <button id="stopBtn" class="geist-button-outline gap-2 hidden">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="5" y="5" width="14" height="14" />
+                </svg>
+                停止
+              </button>
+            </div>
+          </div>
+
+          <aside class="video-card history-panel">
+            <div class="panel-head">
+              <div class="card-title">历史视频</div>
+            </div>
+            <div id="videoEmpty" class="video-empty">生成视频与延长视频都会在这里保存，点击可替换到工作区。</div>
+            <div id="videoStage" class="video-stage hidden"></div>
+          </aside>
+        </aside>
+      </div>
+
+      <div id="cacheVideoModal" class="modal-overlay hidden">
+        <div class="modal-content modal-lg">
+          <div class="modal-header">
+            <h3 class="modal-title">选择缓存视频</h3>
+            <button id="closeCacheVideoModalBtn" class="modal-close">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+          <div id="cacheVideoList" class="cache-video-list"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div id="referenceLightbox" class="reference-lightbox hidden" aria-hidden="true">
+    <button id="closeReferenceLightboxBtn" class="reference-lightbox-close" type="button" aria-label="关闭预览">×</button>
+    <div class="reference-lightbox-backdrop"></div>
+    <div class="reference-lightbox-dialog">
+      <img id="referenceLightboxImg" class="reference-lightbox-image" alt="参考图放大预览">
+    </div>
+  </div>
+
+  <div id="app-footer"></div>
+
+  <!-- 移动端底部悬浮操作栏 -->
+  <div id="mobileActionBar" class="mobile-action-bar">
+    <div class="mobile-action-bar-inner">
+      <!-- 左：齿轮按钮，点击弹出生成参数 -->
+      <button id="mobileSettingsBtn" class="mobile-settings-btn" type="button" aria-label="生成参数">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <!-- 右：操作区，根据上下文滑动切换 -->
+      <div class="mobile-action-ops">
+        <!-- 生成模式（默认）：开始/停止一体切换按钮 -->
+        <div id="mobileBarGenerate" class="mobile-action-slot mobile-action-slot--active">
+          <button id="mobileStartBtn" class="geist-button mobile-action-btn gap-2" type="button">
+            <svg class="mobile-gen-play" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+            <svg class="mobile-gen-stop" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" style="display:none">
+              <rect x="5" y="5" width="14" height="14" />
+            </svg>
+            <span class="mobile-gen-label">开始生成</span>
+          </button>
+        </div>
+        <!-- 延长模式（滚到延长区时） -->
+        <div id="mobileBarSplice" class="mobile-action-slot">
+          <button id="mobileSpliceBtn" class="geist-button mobile-action-btn gap-2" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14" />
+              <path d="M12 5v14" />
+            </svg>
+            延长视频
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- 生成参数 Sheet 遮罩 -->
+  <div id="mobileSettingsOverlay" class="mobile-settings-overlay"></div>
+
+  <script src="/static/common/js/admin-auth.js?v=0.3.0"></script>
+  <script src="/static/common/js/parentpost-memory.js?v=0.1.0"></script>
+  <script src="/static/common/js/public-header.js?v=0.3.3"></script>
+  <script src="/static/common/js/footer.js?v=0.3.0"></script>
+  <script src="/static/common/js/toast.js"></script>
+  <script src="/static/common/js/prompt-enhancer.js?v=0.1.15"></script>
+  <script src="/static/common/js/pwa.js?v=0.1.1"></script>
+  <script src="/static/public/js/video.js?v=0.6.4"></script>
+</body>
+
+</html>

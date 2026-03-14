@@ -19,6 +19,10 @@ function bearerToken(authHeader: string | null): string | null {
   return m?.[1]?.trim() || null;
 }
 
+export function extractBearerToken(authHeader: string | null): string | null {
+  return bearerToken(authHeader);
+}
+
 function authError(message: string, code: string): Record<string, unknown> {
   return {
     error: {
@@ -56,42 +60,49 @@ function safeEqual(left: string, right: string): boolean {
   return diff === 0;
 }
 
-export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }> = async (
-  c,
-  next,
-) => {
-  const token = bearerToken(c.req.header("Authorization") ?? null);
-  const settings = await getSettings(c.env);
+export async function authenticateApiToken(
+  env: Env,
+  authHeader: string | null,
+): Promise<ApiAuthInfo | null> {
+  const token = bearerToken(authHeader);
+  const settings = await getSettings(env);
   const globalKeys = parseApiKeys((settings.grok as { api_key?: unknown }).api_key);
 
   if (!token) {
     if (!globalKeys.length) {
       const row = await dbFirst<{ c: number }>(
-        c.env.DB,
+        env.DB,
         "SELECT COUNT(1) as c FROM api_keys WHERE is_active = 1",
       );
       if ((row?.c ?? 0) === 0) {
-        c.set("apiAuth", { key: null, name: "Anonymous", is_admin: false });
-        return next();
+        return { key: null, name: "Anonymous", is_admin: false };
       }
     }
-    return c.json(authError("缺少认证令牌", "missing_token"), 401);
+    return null;
   }
 
   for (const globalKey of globalKeys) {
     if (safeEqual(token, globalKey)) {
-      c.set("apiAuth", { key: token, name: "默认管理员", is_admin: true });
-      return next();
+      return { key: token, name: "默认管理员", is_admin: true };
     }
   }
 
-  const keyInfo = await validateApiKey(c.env.DB, token);
-  if (keyInfo) {
-    c.set("apiAuth", { key: keyInfo.key, name: keyInfo.name, is_admin: false });
+  const keyInfo = await validateApiKey(env.DB, token);
+  if (!keyInfo) return null;
+  return { key: keyInfo.key, name: keyInfo.name, is_admin: false };
+}
+
+export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }> = async (
+  c,
+  next,
+) => {
+  const token = bearerToken(c.req.header("Authorization") ?? null);
+  const authInfo = await authenticateApiToken(c.env, c.req.header("Authorization") ?? null);
+  if (authInfo) {
+    c.set("apiAuth", authInfo);
     return next();
   }
-
-  return c.json(authError(`令牌无效，长度 ${token.length}`, "invalid_token"), 401);
+  return c.json(authError(token ? `令牌无效，长度 ${token.length}` : "缺少认证令牌", token ? "invalid_token" : "missing_token"), 401);
 };
 
 export const requireAdminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {

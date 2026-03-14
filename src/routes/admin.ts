@@ -156,6 +156,14 @@ adminRoutes.get("/api/storage/mode", requireAdminAuth, async (c) => {
   return c.json({ success: true, data: { mode: "D1" } });
 });
 
+adminRoutes.get("/v1/admin/verify", requireAdminAuth, async (c) => {
+  return c.json({ success: true });
+});
+
+adminRoutes.get("/v1/admin/storage", requireAdminAuth, async (c) => {
+  return c.json({ type: "d1" });
+});
+
 adminRoutes.get("/api/v1/admin/voice/token", requireAdminAuth, async (c) => {
   try {
     const voice = String(c.req.query("voice") ?? "ara");

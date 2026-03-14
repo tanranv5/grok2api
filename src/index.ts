@@ -4,6 +4,7 @@ import { openAiRoutes } from "./routes/openai";
 import { videoRoutes } from "./routes/video";
 import { mediaRoutes } from "./routes/media";
 import { adminRoutes } from "./routes/admin";
+import { publicRoutes } from "./routes/public";
 import { runKvDailyClear } from "./kv/cleanup";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -54,6 +55,7 @@ async function fetchAsset(c: any, pathname: string): Promise<Response> {
 
 app.route("/v1", openAiRoutes);
 app.route("/v1", videoRoutes);
+app.route("/v1/public", publicRoutes);
 app.route("/", mediaRoutes);
 app.route("/", adminRoutes);
 
@@ -65,6 +67,14 @@ app.get("/login", async (c) => {
   return fetchAsset(c, "/login.html");
 });
 
+app.get("/admin/login", async (c) => {
+  return fetchAsset(c, "/login.html");
+});
+
+app.get("/public/login", async (c) => {
+  return fetchAsset(c, "/public/pages/login.html");
+});
+
 app.get("/manage", async (c) => {
   return fetchAsset(c, "/admin.html");
 });
@@ -74,11 +84,35 @@ app.get("/admin/imagine", (c) => c.redirect("/imagine", 302));
 app.get("/admin/voice", (c) => c.redirect("/voice", 302));
 
 app.get("/imagine", async (c) => {
-  return fetchAsset(c, "/imagine/imagine.html");
+  return fetchAsset(c, "/public/pages/imagine.html");
+});
+
+app.get("/imagine-workbench", async (c) => {
+  return fetchAsset(c, "/public/pages/imagine_workbench.html");
+});
+
+app.get("/video", async (c) => {
+  return fetchAsset(c, "/public/pages/video.html");
 });
 
 app.get("/voice", async (c) => {
-  return fetchAsset(c, "/voice/voice.html");
+  return fetchAsset(c, "/public/pages/voice.html");
+});
+
+app.get("/chat", async (c) => {
+  return fetchAsset(c, "/public/pages/chat.html");
+});
+
+app.get("/nsfw", async (c) => {
+  return fetchAsset(c, "/public/pages/nsfw.html");
+});
+
+app.get("/manifest.webmanifest", async (c) => {
+  return fetchAsset(c, "/public/manifest.webmanifest");
+});
+
+app.get("/sw.js", async (c) => {
+  return fetchAsset(c, "/public/sw.js");
 });
 
 app.get("/static/*", async (c) => {
