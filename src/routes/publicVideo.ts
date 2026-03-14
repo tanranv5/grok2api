@@ -10,6 +10,7 @@ import { listCacheRowsByType } from "../repo/cache";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { parseVideoExtendResult, requestVideoExtend } from "../grok/videoExtend";
 import { selectBestToken } from "../repo/tokens";
+import { authenticateQueryToken } from "../public/voice";
 
 type PublicVideoVars = { apiAuth: ApiAuthInfo };
 
@@ -21,6 +22,33 @@ function authHeaders(c: any): HeadersInit | undefined {
 function toVideoViewUrl(key: string): string {
   const name = key.startsWith("video/") ? key.slice("video/".length) : key;
   return `/images/${name}`;
+}
+
+function base64UrlEncode(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = "";
+  for (const item of bytes) binary += String.fromCharCode(item);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function encodeAssetPath(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `u_${base64UrlEncode(url.toString())}`;
+  } catch {
+    const path = raw.startsWith("/") ? raw : `/${raw}`;
+    return `p_${base64UrlEncode(path)}`;
+  }
+}
+
+function toProxyUrl(origin: string, rawUrl: string): string {
+  return `${origin}/images/${encodeAssetPath(rawUrl)}`;
+}
+
+function buildPublicVideoContentUrl(origin: string, taskId: string, rawToken: string): string {
+  const params = new URLSearchParams({ task_id: taskId });
+  if (rawToken) params.set("public_key", rawToken);
+  return `${origin}/v1/public/video/content?${params.toString()}`;
 }
 
 async function runVideoExtendTask(env: Env, taskId: string, body: Record<string, unknown>): Promise<void> {
@@ -127,11 +155,20 @@ publicVideoRoutes.post("/video/stop", async (c) => {
 });
 
 publicVideoRoutes.get("/video/sse", async (c) => {
+  const authInfo = await authenticateQueryToken(
+    c.env,
+    c.req.query("public_key") ?? c.req.query("api_key") ?? c.req.query("admin_token") ?? null,
+  );
+  if (!authInfo) return c.text("Unauthorized", 401);
   const taskId = String(c.req.query("task_id") ?? "").trim();
   if (!taskId) return c.text("missing task_id", 400);
 
   const encoder = new TextEncoder();
   const origin = new URL(c.req.url).origin;
+  const rawToken =
+    String(
+      c.req.query("public_key") ?? c.req.query("api_key") ?? c.req.query("admin_token") ?? "",
+    ).trim();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       while (true) {
@@ -146,7 +183,7 @@ publicVideoRoutes.get("/video/sse", async (c) => {
           break;
         }
         if (task.status === "completed" && task.asset_url) {
-          const content = `${origin}/v1/videos/${task.id}/content`;
+          const content = buildPublicVideoContentUrl(origin, task.id, rawToken);
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`,
@@ -171,6 +208,22 @@ publicVideoRoutes.get("/video/sse", async (c) => {
       Connection: "keep-alive",
     },
   });
+});
+
+publicVideoRoutes.get("/video/content", async (c) => {
+  const authInfo = await authenticateQueryToken(
+    c.env,
+    c.req.query("public_key") ?? c.req.query("api_key") ?? c.req.query("admin_token") ?? null,
+  );
+  if (!authInfo) return c.text("Unauthorized", 401);
+
+  const taskId = String(c.req.query("task_id") ?? "").trim();
+  if (!taskId) return c.text("missing task_id", 400);
+
+  const task = await getOpenAiVideoTask(c.env.DB, taskId);
+  if (!task) return c.text("task_not_found", 404);
+  if (task.status !== "completed" || !task.asset_url) return c.text("video_not_ready", 409);
+  return c.redirect(toProxyUrl(new URL(c.req.url).origin, task.asset_url), 307);
 });
 
 publicVideoRoutes.get("/video/cache/list", async (c) => {
