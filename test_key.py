@@ -10,7 +10,7 @@ BASE_URL = "http://127.0.0.1:8000"
 # ==========================================
 
 def test_chat_completion():
-    print(f"开始测试 Key: {API_KEY[:10]}...")
+    print("开始测试 Key ...")
     
     url = f"{BASE_URL}/v1/chat/completions"
     headers = {
